@@ -1,42 +1,70 @@
-# 本机、局域网与公网部署
+# 网络部署
 
-## 启动入口与配置模型
+下列启动命令和运行路径相对于完整解压后的发布包目录。Windows 可使用 `QQTang-Launcher.exe` 管理服务端和客户端，也可使用无界面启动脚本。
 
-发布包完整解压后使用根目录 `QQTang-Launcher.exe`。它是 32 位 Windows GUI 程序，通过 Windows 10/11 自带的 Windows PowerShell 5.1/WinForms 在隐藏后台执行脚本，不需要 Go、Node.js 或 PowerShell 7，也不显示控制台窗口。
+## 启动服务端
 
-`configs/network.json` schema 3 将服务端和客户端配置分开：
+| 平台 | 启动脚本 |
+| --- | --- |
+| Windows AMD64 | `start-server-windows.cmd` |
+| Linux AMD64 / x86_64 | `start-server-linux-amd64.sh` |
+| Linux ARM64 / aarch64 | `start-server-linux-arm64.sh` |
 
-- `mode`：服务端监听模式，仅允许 `local`、`lan-host`、`remote-host`。
-- `server_ip`：服务端在目录响应中公布给客户端的 IPv4。
-- `client_server_ip`：本机客户端实际连接的 IPv4，与服务端模式互不绑定。
-- `gm_remote`：是否允许非本机访问 GM。
+Linux 示例：
 
-| 服务端模式 | 实际绑定 | 公布地址 |
-|---|---|---|
-| `local` | `127.0.0.1` | `127.0.0.1` |
-| `lan-host` | `0.0.0.0` | 选定的 RFC1918 私有 IPv4 |
-| `remote-host` | `0.0.0.0` | 用户填写的公网 IPv4 |
+```sh
+chmod +x start-server-linux-*.sh
+./start-server-linux-amd64.sh
+```
 
-服务端和客户端拥有独立启动/停止按钮。`start-client.ps1` 在没有本地服务端和 `run-state.json` 的情况下也能独立连接远端服务器；重复启动自动分配下一个客户端实例。`stop-clients.ps1` 只停止全部客户端及辅助进程，`stop-server.ps1` 只停止 Go 服务端。
+ARM64 使用对应的 ARM64 脚本。脚本在前台运行，按 `Ctrl+C` 停止服务端；进程也支持 `SIGTERM`。
 
-## 端口与公网拓扑
+部署时保留包内的 `configs`、`data`、`runtime/client-patched` 和对应架构的 ONNX Runtime。服务端需要读取客户端静态配置，不能只复制单个可执行文件。
 
-公网服务端需要由部署者在云安全组或家庭路由器中开放 TCP 17000、18000、18001、18080、18443 与 UDP 18000。商城 Type-3 目录和 Type-2 会话共享 `18001/TCP`。玩家客户端只向中心服发起出站连接，不需要互相做端口映射；服务端位于家庭 NAT 后时，由服务器主人手动转发端口或使用可信 VPN。
+## 网络配置
 
-局域网与公网模式都使用 Go 中心服中继 QQTPPP 实时数据。项目不实现 STUN/ICE/UPnP 打洞；旧 `p2psvrInfo.ini` 中的下载器 STUN 字符串不作为正式对局拓扑依据。
+[configs/network.json](../configs/network.json) 将服务端监听模式和客户端连接目标分开设置。
 
-## Windows 防火墙和权限
+| 字段 | 用途 |
+| --- | --- |
+| `schema_version` | 配置格式版本，当前为 `3` |
+| `mode` | `local`、`lan-host` 或 `remote-host` |
+| `server_ip` | 服务端向客户端公布的地址 |
+| `client_server_ip` | 客户端连接的服务器地址，可独立于本机服务端设置 |
+| `gm_remote` | 是否开放远程 GM，默认为 `false` |
 
-启动链不会创建、修改或删除防火墙规则，不调用管理员提权，也不关闭 Windows 安全功能。schema 3 不包含任何防火墙控制字段。
+| 模式 | 监听地址 | `server_ip` |
+| --- | --- | --- |
+| `local` | 配置的回环地址 | 默认 `127.0.0.1` |
+| `lan-host` | `0.0.0.0` | 主机的局域网私有 IPv4 |
+| `remote-host` | `0.0.0.0` | 玩家可访问的公网 IPv4 或域名 |
 
-局域网/公网服务端首次监听时，Windows 可能显示系统自带的“允许访问”窗口。主机方只应在可信的专用网络上允许 `runtime\bin\qqt-server-local.exe`。如果误点拒绝，需要在 Windows“允许应用通过防火墙”中手动恢复；在不提权、不写防火墙规则的约束下，启动器不能替用户自动放行。
+域名通过 IPv4 A 记录解析；原生目录协议向客户端提供 IPv4 地址。`client_server_ip` 支持 IPv4 或域名。修改配置后重启相应服务端或客户端。
 
-## GM 访问
+例如，局域网主机地址为 `192.168.1.10` 时，主机配置为：
 
-GM 本机地址固定显示为 `http://127.0.0.1:18100/gm/`。回环访问不加载认证配置，因此不需要账号密码。
+```json
+{
+  "schema_version": 3,
+  "mode": "lan-host",
+  "server_ip": "192.168.1.10",
+  "client_server_ip": "192.168.1.10",
+  "gm_remote": false
+}
+```
 
-只有显式启用 `gm_remote` 时，服务端才绑定非回环地址并强制加载 `configs/gm-auth.json`。启动器直接提供用户名和密码设置；密码使用随机盐和 PBKDF2-HMAC-SHA256 保存，不写明文。HTTP Basic 本身不加密传输，公网管理仍应通过 HTTPS 反向代理或可信 VPN。
+其他玩家在启动器中将客户端目标设置为 `192.168.1.10`，无需启动自己的服务端。
 
-## 诊断
+## 端口与 GM
 
-GUI 的每次后台操作都会把时间、脚本、参数、退出码和完整输出追加到 `runtime/logs/launcher-ui.log`。服务端和客户端仍保留各自的细粒度日志，因此美化界面不会降低开发调试便利性。
+局域网或公网服务器需要放行 TCP `17000/18000/18001/18080/18443` 和 UDP `18000`。服务器位于路由器后时，还需将相应端口转发到服务器。客户端向中心服连接，无需在玩家之间配置端口映射。启动脚本不会自动修改防火墙规则。
+
+GM 默认地址为 `http://127.0.0.1:18100/gm/`。启用 `gm_remote` 前设置管理账号和强密码；通过启动器设置，或使用服务端的 `-gm-username`、`-gm-password-stdin` 参数。凭据以 PBKDF2 加盐校验值保存在 `configs/gm-auth.json`。远程访问应通过 HTTPS 反向代理或可信隧道保护。
+
+## 存档与日志
+
+- 存档：`runtime/data/qqtang.sqlite`。升级或迁移前停止服务端并备份。
+- 服务端日志：`runtime/logs/server-local.jsonl`；图形启动还生成 `local-server.stdout.log` 和 `local-server.stderr.log`。
+- 客户端日志：`runtime/logs/local-client-launch*.json` 和 `local-launcher*.stderr.log`。
+
+提交问题时附上复现步骤、系统版本和相关错误日志，并去除账号凭据及其他个人信息。

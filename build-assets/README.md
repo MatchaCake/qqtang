@@ -4,16 +4,19 @@
 
 这些文件随源码仓库一同版本化，正常情况下不需要手工填充。Linux ONNX Runtime 仍由 `scripts/ensure-onnxruntime-linux.ps1` 校验；缺失时会从官方发布包恢复。
 
-资源包解压后结构为：
+目录结构：
 
 ```text
 build-assets/
   client-no-tp/
   resource-cache/
   pytools/
-  onnxruntime/windows-amd64/
+  onnxruntime/
+    windows-amd64/
+    linux-amd64/
+    linux-arm64/
 ```
 
 原始 QQ堂客户端不属于构建资源，必须由使用者自行放入 `client/original/`。
 
-Python 库的用途、版本及本地忽略项见 [pytools/README.md](pytools/README.md)。
+Python 库的用途、版本和更新方法见 [pytools/README.md](pytools/README.md)。

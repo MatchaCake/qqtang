@@ -15,7 +15,7 @@ go build ./cmd/...
 完整发行包构建还需要：
 
 - Go 1.26；
-- Python 3；
+- Python 3.10 或更新版本；
 - Windows AMD64 GCC（ONNX Runtime 的 CGO 构建）；
 - .NET Framework 64 位 C# 编译器；
 - 构建 Linux 二进制时所需的 AMD64、ARM64 交叉 GCC。
@@ -27,4 +27,4 @@ go build ./cmd/...
 go generate ./internal/tooling/clientpatch
 ```
 
-原始客户端和大体积构建资源的准备方法见根目录 `README.md`。
+原始客户端的准备方法见 [client/original/README.md](client/original/README.md)，构建资源说明见 [build-assets/README.md](build-assets/README.md)。

@@ -32,7 +32,7 @@ client/original/    用户自行放置的原始客户端，不进入 Git
 build-assets/       版本化的补全资源与第三方运行时
 ```
 
-服务端依赖边界见 [架构说明](docs/server-architecture.md)，协议建模见 [协议说明](docs/protocol-overview.md)。
+开发参考：[架构说明](docs/server-architecture.md)、[协议说明](docs/protocol-overview.md)、[网络部署](docs/network-deployment.md)、[物品 ID](docs/item-id-catalog.md) 和 [AI 模型](configs/models/README.md)。
 
 ## 开发验证
 
