@@ -35,11 +35,11 @@ const (
 // carry one or more encoded instances of this object, while the ordinary
 // high-rate path carries the same bytes inside QQTPPP Type 2.
 type GameplayDataPackage struct {
-	PlayerID       uint16
-	Time           uint32
-	GameID         uint32
+	PlayerID      uint16
+	Time          uint32
+	GameID        uint32
 	MessageIndexes []uint32
-	Messages       []BattleMessageData
+	Messages      []BattleMessageData
 }
 
 // BattleMessageData is QQT_MSG_DATA. DataID is a 32-bit schema identifier;

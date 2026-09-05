@@ -100,10 +100,14 @@ func (server *Server) handleLoginRequest(session *connectionSession, connectionI
 			profileChanged = true
 		}
 		if loginErr == nil && profileChanged {
-			loginErr = players.Save(context.Background(), loginRequest.UIN, profile)
-			if loginErr == nil {
-				profile, loginErr = players.ProjectEquipment(context.Background(), loginRequest.UIN, profile)
-			}
+			profile, loginErr = players.UpdateProfile(context.Background(), loginRequest.UIN, func(current *game.PlayerProfile) error {
+				if current.Nickname == "" {
+					current.Nickname = seedProfile.Nickname
+				}
+				current.RoomCount = seedProfile.RoomCount
+				current.MinimumRoomID = seedProfile.MinimumRoomID
+				return nil
+			})
 		}
 	}
 	if loginErr != nil {

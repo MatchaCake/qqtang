@@ -115,6 +115,7 @@ type liveCompetitiveAIMovementProjection struct {
 	sequence         uint16
 	lastSentAt       uint32
 	lastSentPosition battleengine.Position
+	path             battleengine.NativeMovementProjection
 }
 
 type liveCompetitiveAIHitRequestKey struct {
@@ -363,19 +364,14 @@ func competitiveAILivePolicy(base battleengine.Policy, decisionSteps, initialWai
 	if decisionSteps == 0 {
 		decisionSteps = 1
 	}
-	// Inference is sampled at the configured decision cadence. Tactical safety
-	// remains outside it so a known blast can be answered on the next 20 ms world
-	// frame. The held-direction filter must be outermost: it stabilizes the final
-	// action that is both simulated and serialized, including tactical overrides.
-	cadence := &competitiveAIDecisionCadencePolicy{base: base, steps: decisionSteps, initialWait: initialWaitSteps}
-	safety := &battleengine.TacticalSafetyPolicy{
-		Base: cadence, HorizonMS: battleengine.NativeBombFuseMS + battleengine.NativeFlameDurationMS + 200,
-		// This is an emergency deadline, not a strategic safety oracle. Before
-		// the final 400 ms the learned actor may stand on its own bubble or extend
-		// a multi-bubble pressure chain like an original client player.
-		EngageWithinMS: 400,
+	// The cadence mirrors the environment's decision interval and only holds
+	// the last selected key between inferences. Do not wrap the actor in a
+	// tactical controller or direction-confirmation filter: those rewrite legal
+	// model decisions, make deployment differ from formal evaluation and prevent
+	// learned high-risk techniques such as late escape and rapid reversals.
+	return &competitiveAIDecisionCadencePolicy{
+		base: base, steps: decisionSteps, initialWait: initialWaitSteps,
 	}
-	return &competitiveAIHeldDirectionPolicy{base: safety}
 }
 
 func competitiveAIDecisionPhase(gameID, spawnSeed, itemSeed uint32, playerID uint16, decisionSteps uint32) uint32 {
@@ -470,11 +466,18 @@ func newLiveCompetitiveAIRuntime(
 		source := battleengine.ParticipantHuman
 		if participant.Source == match.CompetitiveParticipantVirtualAI {
 			source = battleengine.ParticipantVirtualAI
-			// The learned policy is intentionally shared and immutable; every live
-			// actor receives independent cadence, tactical and direction-segment
-			// state around that common inference source.
+			// Model weights and the inference session are shared, but recurrent
+			// memory belongs to one actor in one match. Stateless policies simply
+			// use the supplied instance; learned recurrent policies fork an
+			// actor-local state wrapper here.
+			actorPolicy := policy
+			if factory, ok := policy.(interface {
+				NewActorPolicy() battleengine.Policy
+			}); ok {
+				actorPolicy = factory.NewActorPolicy()
+			}
 			phase := competitiveAIDecisionPhase(gameData.GameID, gameData.SpawnSeed, gameData.ItemSeed, participant.PlayerID, decisionSteps)
-			policies[participant.PlayerID] = competitiveAILivePolicy(policy, decisionSteps, phase)
+			policies[participant.PlayerID] = competitiveAILivePolicy(actorPolicy, decisionSteps, phase)
 			virtualIDs[participant.PlayerID] = struct{}{}
 		} else {
 			humanIDs[participant.PlayerID] = struct{}{}
@@ -486,10 +489,7 @@ func newLiveCompetitiveAIRuntime(
 	if len(humanIDs) == 0 || len(virtualIDs) == 0 {
 		return nil, fmt.Errorf("competitive AI runtime requires both human and virtual participants")
 	}
-	spawnMode := battleengine.NativeSpawnTeams
-	if freeRule {
-		spawnMode = battleengine.NativeSpawnFree
-	}
+	spawnMode := battleengine.NativeSpawnModeForMap(selectedMap, freeRule)
 	runtime, err := battleengine.NewRuntimeFromCompetitiveMap(selectedMap, battleengine.CompetitiveRuntimeOptions{
 		SimulationSeed: uint64(gameData.SpawnSeed)<<32 | uint64(gameData.ItemSeed),
 		SpawnSeed:      gameData.SpawnSeed, ItemSeed: gameData.ItemSeed,
@@ -635,7 +635,9 @@ func (server *Server) installCompetitiveAIRuntime(runtime *liveCompetitiveAIRunt
 			}
 		}
 		server.log(logEvent{Level: "info", Event: "competitive_ai_runtime_started", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_map_%d_world_tick_%s_decision_tick_%s%s", runtime.gameID, runtime.mapID, runtime.worldTick, runtime.decisionTick, profiles)})
-		go runtime.run(server)
+		if !server.runBackground(func() { runtime.run(server) }) {
+			runtime.stopRuntime()
+		}
 	})
 }
 
@@ -1071,13 +1073,11 @@ func (runtime *liveCompetitiveAIRuntime) advanceToLocked(server *Server, target 
 		if runtime.stopped() {
 			return nil
 		}
-		// Native action producers record the gameplay event and then call
-		// FUN_0087960b, which forces the following PLAYER_MOVE sample. QBV order is
-		// therefore event -> forced movement at the same scene checkpoint.
-		forceMovement := runtime.projectEvents(server, before, after, stepResult.Events)
-		// The 0x20 bit marks FUN_0087960b's forced flush; ordinary held segments
-		// retain the native 150 ms heartbeat.
-		runtime.projectMovement(server, after, stepResult.Actions, forceMovement)
+		// FUN_0087960b dispatches a gameplay message to its schema handler; it
+		// is not a movement flush. Native bit 5 comes from actor+0x478 (for
+		// example FUN_005acaab on a hit), not from producing an ordinary action.
+		runtime.projectEvents(server, before, after, stepResult.Events)
+		runtime.projectMovement(server, before, after, stepResult.Actions)
 		if runtime.stopped() {
 			return nil
 		}
@@ -1289,9 +1289,9 @@ func bombByID(bombs []battleengine.Bomb, bombID uint32) (battleengine.Bomb, bool
 
 func (runtime *liveCompetitiveAIRuntime) projectMovement(
 	server *Server,
+	before *battleengine.Engine,
 	snapshot *battleengine.Engine,
 	appliedActions []battleengine.Action,
-	force map[uint16]struct{},
 ) {
 	if snapshot == nil {
 		return
@@ -1311,62 +1311,71 @@ func (runtime *liveCompetitiveAIRuntime) projectMovement(
 			continue
 		}
 		projection := runtime.movement[playerID]
-		_, forced := force[playerID]
-		projection, move, emitted, err := competitiveAIMovementSample(snapshot, playerID, actions[playerID], projection, forced)
+		projection, moves, err := competitiveAIMovementFrameSamples(before, snapshot, playerID, actions[playerID], projection, false)
 		runtime.movement[playerID] = projection
 		if err != nil {
 			server.log(logEvent{Level: "warn", Event: "competitive_ai_move_projection_failed", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_player_%d", runtime.gameID, playerID), ErrorContext: err.Error()})
 			continue
 		}
-		if !emitted {
-			continue
-		}
-		wireTime := competitiveAIWireTime(snapshot.ElapsedMS())
-		if err := runtime.sendMovementSample(server, playerID, wireTime, move); err != nil {
-			server.log(logEvent{Level: "warn", Event: "competitive_ai_move_peer_failed", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_player_%d", runtime.gameID, playerID), ErrorContext: err.Error()})
+		for _, move := range moves {
+			if err := runtime.sendMovementSample(server, playerID, move.TimeStamp, move); err != nil {
+				server.log(logEvent{Level: "warn", Event: "competitive_ai_move_peer_failed", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_player_%d", runtime.gameID, playerID), ErrorContext: err.Error()})
+			}
 		}
 	}
 }
 
-// projectForcedMovement emits the PLAYER_MOVE flush that a real Client.exe
-// appends after an asynchronously triggered local action. There is no current
-// policy result on this receive path, so retain the already projected held
-// segment instead of accidentally turning every other virtual actor into a
-// stopped actor.
-func (runtime *liveCompetitiveAIRuntime) projectForcedMovement(
-	server *Server,
-	snapshot *battleengine.Engine,
-	force map[uint16]struct{},
-) {
-	if snapshot == nil || len(force) == 0 {
-		return
+// A fixed engine step applies its selected key over [before, after]. Publish
+// an ordinary input change at that interval's start, where the actor actually
+// turns. Publishing only its post-step position omits the first 20 ms of the
+// new path: FUN_005d0b81 then snaps or backtracks from the old extrapolated path.
+// Native producers can flush a key change on a zero-delta update (the QBV human
+// turn at 9969 ms changes down -> right at x=60, before advancing right).
+// Action-forced checkpoints keep their existing event ordering and position.
+func competitiveAIMovementFrameSamples(
+	before, after *battleengine.Engine, playerID uint16, action battleengine.Action,
+	projection liveCompetitiveAIMovementProjection, forced bool,
+) (liveCompetitiveAIMovementProjection, []game.PlayerMoveSequence, error) {
+	if after == nil {
+		return projection, nil, fmt.Errorf("movement snapshot is nil")
 	}
-	playerIDs := make([]int, 0, len(force))
-	for playerID := range force {
-		playerIDs = append(playerIDs, int(playerID))
+	current, currentOK := actorByID(after.Actors(), playerID)
+	if !currentOK {
+		return projection, nil, fmt.Errorf("movement player %d is absent", playerID)
 	}
-	sort.Ints(playerIDs)
-	for _, value := range playerIDs {
-		playerID := uint16(value)
-		projection := runtime.movement[playerID]
-		action := battleengine.Action{PlayerID: playerID}
-		if projection.initialized && projection.moving {
-			action.Move = projection.direction
-		}
-		projection, move, emitted, err := competitiveAIMovementSample(snapshot, playerID, action, projection, true)
-		runtime.movement[playerID] = projection
-		if err != nil {
-			server.log(logEvent{Level: "warn", Event: "competitive_ai_forced_move_projection_failed", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_player_%d", runtime.gameID, playerID), ErrorContext: err.Error()})
-			continue
-		}
-		if !emitted {
-			continue
-		}
-		wireTime := competitiveAIWireTime(snapshot.ElapsedMS())
-		if err = runtime.sendMovementSample(server, playerID, wireTime, move); err != nil {
-			server.log(logEvent{Level: "warn", Event: "competitive_ai_forced_move_peer_failed", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_player_%d", runtime.gameID, playerID), ErrorContext: err.Error()})
+	if current.State == battleengine.ActorEliminated {
+		return projection, nil, nil
+	}
+	moving, direction := competitiveAINativeMovementIntent(action, current)
+	changed := moving != projection.moving || (moving && direction != projection.direction)
+	var moves []game.PlayerMoveSequence
+	if changed && before != nil && projection.initialized && !forced &&
+		projection.lastSentAt < before.ElapsedMS() && action.UseActionID == 0 {
+		previous, previousOK := actorByID(before.Actors(), playerID)
+		beforeSpeed, _ := before.NativeEffectiveSpeedRate(playerID, direction)
+		afterSpeed, _ := after.NativeEffectiveSpeedRate(playerID, direction)
+		// Attribute/status transitions belong to the post-event checkpoint,
+		// whereas ordinary held-key changes have an unambiguous input boundary.
+		if previousOK && previous.State == battleengine.ActorActive && current.State == battleengine.ActorActive &&
+			previous.MovementStatus == current.MovementStatus && previous.TransformationSceneID == current.TransformationSceneID &&
+			beforeSpeed == afterSpeed {
+			var move game.PlayerMoveSequence
+			var emitted bool
+			var err error
+			projection, move, emitted, err = competitiveAIMovementSampleWithIntent(before, previous, moving, direction, projection, false)
+			if err != nil {
+				return projection, nil, err
+			}
+			if emitted {
+				moves = append(moves, move)
+			}
 		}
 	}
+	projection, move, emitted, err := competitiveAIMovementSampleWithIntent(after, current, moving, direction, projection, forced)
+	if emitted {
+		moves = append(moves, move)
+	}
+	return projection, moves, err
 }
 
 func (runtime *liveCompetitiveAIRuntime) sendMovementSample(server *Server, playerID uint16, wireTime uint32, move game.PlayerMoveSequence) error {
@@ -1410,6 +1419,14 @@ func competitiveAIMovementSample(
 		return projection, game.PlayerMoveSequence{}, false, nil
 	}
 	moving, direction := competitiveAINativeMovementIntent(action, current)
+	return competitiveAIMovementSampleWithIntent(snapshot, current, moving, direction, projection, forced)
+}
+
+func competitiveAIMovementSampleWithIntent(
+	snapshot *battleengine.Engine, current battleengine.Actor, moving bool, direction battleengine.Direction,
+	projection liveCompetitiveAIMovementProjection, forced bool,
+) (liveCompetitiveAIMovementProjection, game.PlayerMoveSequence, bool, error) {
+	playerID := current.PlayerID
 	effectiveSpeed, speedPresent := snapshot.NativeEffectiveSpeedRate(playerID, direction)
 	if !speedPresent {
 		return projection, game.PlayerMoveSequence{}, false, fmt.Errorf("movement speed player %d is absent", playerID)
@@ -1419,33 +1436,44 @@ func competitiveAIMovementSample(
 	if boundary {
 		projection.sequence++
 	}
+	path := battleengine.NativeMovementProjection{End: current.Position}
+	if moving {
+		var err error
+		path, err = snapshot.ProjectNativeMovement(playerID, direction)
+		if err != nil {
+			return projection, game.PlayerMoveSequence{}, false, err
+		}
+		// FUN_005f34ee retains the existing corner after the actor has passed
+		// it, provided the collision endpoint and held segment are unchanged.
+		if !boundary && path.End == projection.path.End && !path.HasCorner {
+			path.Corner, path.HasCorner = projection.path.Corner, projection.path.HasCorner
+		}
+	}
+	// The native producer sets its dirty flag as soon as the collision path
+	// changes, even with the same held key. Waiting for the heartbeat leaves
+	// peers following the old wall/corner for up to 160 ms.
+	pathChanged := path != projection.path
+	due := boundary || forced || pathChanged || snapshot.ElapsedMS()-projection.lastSentAt >= competitiveAIMovementHeartbeatMS
+	if !due || (!forced && !boundary && !pathChanged && projection.lastSentAt == snapshot.ElapsedMS() && projection.lastSentPosition == current.Position) {
+		return projection, game.PlayerMoveSequence{}, false, nil
+	}
 	projection.initialized = true
 	projection.moving = moving
 	projection.direction = direction
 	projection.speed = effectiveSpeed
-	due := boundary || forced || snapshot.ElapsedMS()-projection.lastSentAt >= competitiveAIMovementHeartbeatMS
-	if !due || (!forced && !boundary && projection.lastSentAt == snapshot.ElapsedMS() && projection.lastSentPosition == current.Position) {
-		return projection, game.PlayerMoveSequence{}, false, nil
-	}
-
+	projection.path = path
 	walk := nativeWalkDirection(direction)
 	if forced {
-		// FUN_005f3695 stores its explicit flush argument in bit 5. Native QBV
-		// exposes this as 0x32/0x23 immediately after 0x0FA5.
+		// FUN_005f3695 stores its explicit flush argument in bit 5.
 		walk |= 0x20
 	}
-	endX, endY := current.Position.X, current.Position.Y
-	cornerX, cornerY := int32(0), int32(0)
 	if moving {
 		walk |= 0x10
-		path, err := snapshot.ProjectNativeMovement(playerID, direction)
-		if err != nil {
-			return projection, game.PlayerMoveSequence{}, false, err
-		}
-		endX, endY = path.End.X, path.End.Y
-		if path.HasCorner {
-			cornerX, cornerY = path.Corner.X, path.Corner.Y
-		}
+	}
+	endX, endY := path.End.X, path.End.Y
+	cornerX, cornerY := int32(0), int32(0)
+	if path.HasCorner {
+		cornerX, cornerY = path.Corner.X, path.Corner.Y
 	}
 	grid := snapshot.Grid()
 	endX = clampPosition(endX, int32(grid.Width)*battleengine.CellSizePixels-1)
@@ -1464,16 +1492,14 @@ func competitiveAIMovementSample(
 
 func competitiveAIHitMovementSample(
 	event battleengine.Event,
-	isAvatar bool,
 	frame liveCompetitiveAIActorFrame,
 	projection liveCompetitiveAIMovementProjection,
 	grid battleengine.Grid,
 ) (liveCompetitiveAIMovementProjection, game.PlayerMoveSequence) {
-	direction := frame.facing
-	if projection.initialized {
-		direction = projection.direction
-	}
-	moving := isAvatar && projection.initialized && projection.moving
+	// 005acaab and avatar callback 005f78bf both stop and face down before
+	// 005f3810 consumes actor+478. Held input is sampled again next frame.
+	direction := battleengine.DirectionDown
+	moving := false
 	boundary := !projection.initialized || moving != projection.moving || (moving && direction != projection.direction) || frame.speed != projection.speed
 	if boundary {
 		projection.sequence++
@@ -1704,16 +1730,7 @@ func buildCompetitiveAIPeerGameplayPayload(gameID uint32, playerID uint16, wireT
 	})
 }
 
-func (runtime *liveCompetitiveAIRuntime) projectEvents(server *Server, before, after *battleengine.Engine, events []battleengine.Event) map[uint16]struct{} {
-	forceMovement := make(map[uint16]struct{})
-	markProduced := func(event battleengine.Event, produced bool) {
-		if !produced {
-			return
-		}
-		if _, virtual := runtime.virtualIDs[event.PlayerID]; virtual {
-			forceMovement[event.PlayerID] = struct{}{}
-		}
-	}
+func (runtime *liveCompetitiveAIRuntime) projectEvents(server *Server, before, after *battleengine.Engine, events []battleengine.Event) {
 	for _, event := range events {
 		if runtime.runtime.VirtualActorSuspended(event.PlayerID) && competitiveAISuspendedEvent(event.Kind) {
 			continue
@@ -1721,11 +1738,11 @@ func (runtime *liveCompetitiveAIRuntime) projectEvents(server *Server, before, a
 		switch event.Kind {
 		case battleengine.EventBombPlaced:
 			if _, virtual := runtime.virtualIDs[event.PlayerID]; virtual {
-				markProduced(event, runtime.projectBombPlaced(server, after, event))
+				runtime.projectBombPlaced(server, after, event)
 			}
 		case battleengine.EventPickupCollectRequested:
 			if _, virtual := runtime.virtualIDs[event.PlayerID]; virtual {
-				markProduced(event, runtime.projectPickup(server, event))
+				runtime.projectPickup(server, event)
 			}
 		case battleengine.EventFieldObjectTriggered:
 			if (event.ActionID == 42 || event.ActionID == 43) && event.TargetID != 0 {
@@ -1733,7 +1750,7 @@ func (runtime *liveCompetitiveAIRuntime) projectEvents(server *Server, before, a
 					request := event
 					request.PlayerID = event.TargetID
 					request.SceneID = uint32(event.ActionID)
-					markProduced(request, runtime.projectPickup(server, request))
+					runtime.projectPickup(server, request)
 				}
 			}
 		case battleengine.EventActorHitRequested:
@@ -1748,20 +1765,20 @@ func (runtime *liveCompetitiveAIRuntime) projectEvents(server *Server, before, a
 				runtime.projectEliminated(server, event, events)
 			}
 		case battleengine.EventActorRescueRequested:
-			markProduced(event, runtime.projectInteractionRequest(server, event, game.RequestSavePlayer))
+			runtime.projectInteractionRequest(server, event, game.RequestSavePlayer)
 		case battleengine.EventActorEliminationRequested:
-			markProduced(event, runtime.projectInteractionRequest(server, event, game.RequestKillPlayer))
+			runtime.projectInteractionRequest(server, event, game.RequestKillPlayer)
 		case battleengine.EventMapElementMoveRequested:
 			if _, virtual := runtime.virtualIDs[event.PlayerID]; virtual {
-				markProduced(event, runtime.projectMapElementMoved(server, event))
+				runtime.projectMapElementMoved(server, event)
 			}
 		case battleengine.EventBattleActionUseRequested:
 			if _, virtual := runtime.virtualIDs[event.PlayerID]; virtual {
-				markProduced(event, runtime.projectBattleAction(server, event))
+				runtime.projectBattleAction(server, event)
 			}
 		case battleengine.EventBombKickRequested:
 			if _, virtual := runtime.virtualIDs[event.PlayerID]; virtual {
-				markProduced(event, runtime.projectBombKicked(server, before, event))
+				runtime.projectBombKicked(server, before, event)
 			}
 		case battleengine.EventNativePassStarted:
 			if _, virtual := runtime.virtualIDs[event.PlayerID]; virtual {
@@ -1785,7 +1802,6 @@ func (runtime *liveCompetitiveAIRuntime) projectEvents(server *Server, before, a
 			}
 		}
 	}
-	return forceMovement
 }
 
 func competitiveAISuspendedEvent(kind battleengine.EventKind) bool {
@@ -2065,16 +2081,16 @@ func (runtime *liveCompetitiveAIRuntime) projectActorHit(server *Server, event b
 		server.log(logEvent{Level: "warn", Event: "competitive_ai_trapped_peer_failed", RoomID: fmt.Sprint(runtime.roomID), ErrorContext: err.Error()})
 		return true
 	}
-	runtime.projectActorHitMovement(server, event, isAvatar)
+	runtime.projectActorHitMovement(server, event)
 	server.log(logEvent{Level: "debug", Event: "competitive_ai_trapped_requested", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_player_%d_source_%d_time_%d_avatar_%t_pos_%d_%d", runtime.gameID, event.PlayerID, event.TargetID, wireTime, isAvatar, event.Position.X, event.Position.Y)})
 	return true
 }
 
-// projectActorHitMovement is the exact FUN_0087960b flush produced after a
-// local 0x0FA5. A normal hit releases movement at the event coordinate; an
-// avatar hit retains the held direction but uses a zero-length endpoint until
-// the authority audit resumes policy projection.
-func (runtime *liveCompetitiveAIRuntime) projectActorHitMovement(server *Server, event battleengine.Event, isAvatar bool) {
+// projectActorHitMovement preserves the actor+0x478 checkpoint set by
+// FUN_005acaab and consumed by FUN_005f3810 after a local FA5.
+// Both hit branches release movement and face down at the event coordinate;
+// the authority audit resumes policy projection after the reliable outcome.
+func (runtime *liveCompetitiveAIRuntime) projectActorHitMovement(server *Server, event battleengine.Event) {
 	frame, ok := runtime.actorFrameAtLocked(event.PlayerID, event.TimeMS)
 	if !ok {
 		return
@@ -2084,7 +2100,7 @@ func (runtime *liveCompetitiveAIRuntime) projectActorHitMovement(server *Server,
 		return
 	}
 	projection := runtime.movement[event.PlayerID]
-	projection, move := competitiveAIHitMovementSample(event, isAvatar, frame, projection, snapshot.Grid())
+	projection, move := competitiveAIHitMovementSample(event, frame, projection, snapshot.Grid())
 	runtime.movement[event.PlayerID] = projection
 	if err := runtime.sendMovementSample(server, event.PlayerID, competitiveAIWireTime(event.TimeMS), move); err != nil {
 		server.log(logEvent{Level: "warn", Event: "competitive_ai_hit_move_peer_failed", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_player_%d", runtime.gameID, event.PlayerID), ErrorContext: err.Error()})
@@ -2235,19 +2251,7 @@ func (runtime *liveCompetitiveAIRuntime) projectBattleAction(server *Server, eve
 		return false
 	}
 	wireTime := competitiveAIWireTime(event.TimeMS)
-	use := game.WorldUseItemEvent{
-		PlayerID: event.PlayerID, ClientTime: wireTime, ItemID: uint32(event.ActionID),
-		PosX: uint16(event.Position.X), PosY: uint16(event.Position.Y),
-	}
-	if event.ActionID == 44 || event.ActionID == 46 {
-		use.Flag2 = ^uint32(0)
-		if placed, ok := runtime.bombs[event.BombID]; ok && event.BombID != 0 {
-			use.Flag1 = uint32(placed.power)<<16 | uint32(uint16(placed.position.Row)&0xff)<<8 | uint32(uint16(placed.position.Col)&0xff)
-			use.Flag2 = uint32(placed.ownerID)
-			use.Flag3 = placed.placedAt
-			use.Flag4 = 1
-		}
-	}
+	use := runtime.battleActionSample(event)
 	body, err := use.MarshalNetworkBinary()
 	if err != nil {
 		runtime.clearSceneRequest(key)
@@ -2269,6 +2273,28 @@ func (runtime *liveCompetitiveAIRuntime) projectBattleAction(server *Server, eve
 		server.log(logEvent{Level: "error", Event: "competitive_ai_action_commit_failed", RoomID: fmt.Sprint(runtime.roomID), Result: fmt.Sprintf("game_%d_player_%d_item_%d", runtime.gameID, use.PlayerID, use.ItemID), ErrorContext: err.Error()})
 	}
 	return true
+}
+
+func (runtime *liveCompetitiveAIRuntime) battleActionSample(event battleengine.Event) game.WorldUseItemEvent {
+	use := game.WorldUseItemEvent{
+		PlayerID: event.PlayerID, ClientTime: competitiveAIWireTime(event.TimeMS), ItemID: uint32(event.ActionID),
+		PosX: uint16(event.Position.X), PosY: uint16(event.Position.Y),
+	}
+	if event.ActionID == 44 || event.ActionID == 46 {
+		// FUN_00610631 packs direction/power/row/column even on a miss;
+		// FUN_006047a0 uses the low two bytes as the actual flight endpoint.
+		use.Flag1 = uint32(nativeWalkDirection(event.ProjectileDirection))<<24 |
+			uint32(uint16(event.ProjectileTargetCell.Row)&0xff)<<8 |
+			uint32(uint16(event.ProjectileTargetCell.Col)&0xff)
+		use.Flag2 = ^uint32(0)
+		if placed, ok := runtime.bombs[event.BombID]; ok && event.BombID != 0 {
+			use.Flag1 |= uint32(placed.power) << 16
+			use.Flag2 = uint32(placed.ownerID)
+			use.Flag3 = placed.placedAt
+			use.Flag4 = 1
+		}
+	}
+	return use
 }
 
 func (runtime *liveCompetitiveAIRuntime) acceptNativeBattleActionLocked(server *Server, use game.WorldUseItemEvent) error {
@@ -2345,7 +2371,7 @@ func (runtime *liveCompetitiveAIRuntime) projectBombKicked(server *Server, befor
 			return false
 		}
 		placed = liveCompetitiveAIBomb{
-			ownerID: bomb.OwnerID, placedAt: competitiveAIWireTime(bomb.ExplodeAtMS - battleengine.NativeBombFuseMS),
+			ownerID: bomb.OwnerID, placedAt: competitiveAIWireTime(bomb.ExplodeAtMS - battleengine.NativeBombFuseMS - 1),
 			position: event.FromCell, appearance: competitiveAIDefaultBombAppearance, power: bomb.Power + 1,
 		}
 	}
@@ -2379,7 +2405,7 @@ func (server *Server) concludeCompetitiveAI(runtime *liveCompetitiveAIRuntime, c
 	}
 	runtime.stopRuntime()
 	gameOver := competitiveGameOverData(clientTime, resolution)
-	time.AfterFunc(competitiveNativeConclusionDelay, func() {
+	server.runAfter(competitiveNativeConclusionDelay, func() {
 		err := runRoomActor(server, runtime.roomID, "competitive-ai-conclusion", func() error {
 			server.completeCompetitiveAIConclusionOnRoomActor(runtime, gameOver, battle, resolution)
 			return nil
@@ -2715,8 +2741,7 @@ func (server *Server) recordCompetitiveAIHumanPackagesOnRoomActor(runtime *liveC
 				// changes. projectEvents ignores those duplicated facts and emits
 				// only lifecycle requests that an absent virtual Client.exe would
 				// normally have authored for itself.
-				forceMovement := runtime.projectEvents(server, beforeExplosion, afterExplosion, nativeEvents)
-				runtime.projectForcedMovement(server, afterExplosion, forceMovement)
+				runtime.projectEvents(server, beforeExplosion, afterExplosion, nativeEvents)
 				runtime.nativeExplosions[explosionKey] = struct{}{}
 				for _, bomb := range verifiedBombs {
 					if bomb.BombID != 0 {

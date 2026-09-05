@@ -387,7 +387,7 @@ func TestLegalActionsUseCompleteNativeTickAtCollisionEdge(t *testing.T) {
 	}
 }
 
-func TestLegalActionsWaitForMovementPhaseToRepeat(t *testing.T) {
+func TestLegalActionsReachWallCenterWithoutWaitingForShorterPhase(t *testing.T) {
 	config := testConfig()
 	config.Grid = testOpenGrid(5, 5)
 	config.Grid.Cells[1*5+2] = Tile{Kind: CellSolid}
@@ -404,17 +404,17 @@ func TestLegalActionsWaitForMovementPhaseToRepeat(t *testing.T) {
 	if distance := engine.consumeNativeMovementDistance(&probe, DirectionRight, config.Rules.TickMS); distance != 4 {
 		t.Fatalf("first movement distance=%d, want 4", distance)
 	}
-	if engine.resolveNativeMovementDisplacement(&probe, DirectionRight, 4, true) {
-		t.Fatalf("four-pixel phase unexpectedly crossed wall: %+v", probe.Position)
+	if !engine.resolveNativeMovementDisplacement(&probe, DirectionRight, 4, true) || probe.Position.X != 60 {
+		t.Fatalf("four-pixel phase did not clamp at the native wall centre: %+v", probe.Position)
 	}
 	if distance := engine.consumeNativeMovementDistance(&probe, DirectionRight, config.Rules.TickMS); distance != 3 {
 		t.Fatalf("second movement distance=%d, want 3", distance)
 	}
-	if !engine.resolveNativeMovementDisplacement(&probe, DirectionRight, 3, true) || probe.Position.X != 60 {
-		t.Fatalf("three-pixel phase did not reach collision edge: %+v", probe.Position)
+	if engine.resolveNativeMovementDisplacement(&probe, DirectionRight, 3, true) || probe.Position.X != 60 {
+		t.Fatalf("subsequent phase crossed the wall centre: %+v", probe.Position)
 	}
 	if !engine.canProduceNativeMovement(*actor, DirectionRight) {
-		t.Fatal("productive shorter remainder phase was rejected after one blocked update")
+		t.Fatal("productive native centre clamp was rejected by LegalActions")
 	}
 }
 
@@ -655,11 +655,97 @@ func TestProjectNativeMovementUsesCollisionResolverWithoutMutatingEngine(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projection.End.X != 69 || projection.End.Y != start.Y {
-		t.Fatalf("25ms wall-bounded projection = %+v, want end 69,%d", projection, start.Y)
+	if projection.End.X != 68 || projection.End.Y != start.Y {
+		t.Fatalf("native wall-bounded projection = %+v, want last whole-step end 68,%d", projection, start.Y)
 	}
 	if projection.HasCorner {
 		t.Fatalf("flat wall unexpectedly produced corner %+v", projection.Corner)
+	}
+	engine.actors[0].SpeedPixelsPerSecond = 40
+	projection, err = engine.ProjectNativeMovement(1, DirectionRight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.End.X != 70 {
+		t.Fatalf("native trailing-nine normalization = %+v, want X=70", projection)
+	}
+}
+
+func TestNativeMovementAndProjectionReachSameWallCenter(t *testing.T) {
+	// session-20260905-071016, game 3/player 20005: the authority stayed at
+	// (338,220), but every moving heartbeat advertised (340,220). The native
+	// resolver clamps the final update at a walkable cell centre. Both the
+	// authoritative 20 ms update and the 25 ms producer must use that branch.
+	config := testConfig()
+	config.Grid = testOpenGrid(15, 13)
+	config.Rules.TickMS = 20
+	config.Rules.ActorHalfSizePixels = NativeActorHalfSizePixels
+	config.Grid.Cells[5*15+9] = Tile{Kind: CellSolid}
+	config.Participants[0].SpeedPixelsPerSecond = 180
+	engine := mustEngine(t, config)
+	engine.actors[0].Position = Position{X: 338, Y: 220}
+	before := engine.Clone()
+	projection, err := engine.ProjectNativeMovement(1, DirectionRight)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection.End != (Position{X: 340, Y: 220}) || projection.HasCorner {
+		t.Fatalf("wall projection = %+v, want centre (340,220)", projection)
+	}
+	if !reflect.DeepEqual(engine, before) {
+		t.Fatal("projection mutated authoritative state")
+	}
+	for step := 0; step < 8; step++ {
+		if _, err := engine.Step([]Action{{PlayerID: 1, Move: DirectionRight}}); err != nil {
+			t.Fatal(err)
+		}
+		if engine.actors[0].Position != projection.End {
+			t.Fatalf("authority moved beyond blocked endpoint: %+v", engine.actors[0].Position)
+		}
+	}
+}
+
+func TestNativeBombCornerSweepPreservesFirstCollision(t *testing.T) {
+	// The 17:18 live match advertised (540,23) as an endpoint while its 20 ms
+	// actor could turn the corner to Y=20. A 25 ms probe crossed the bomb's
+	// three-pixel entry strip, then classified its final point as collision-free
+	// and lost the perpendicular branch. Exercise the same boundary on all axes.
+	for _, tc := range []struct {
+		name      string
+		direction Direction
+		start     Position
+		bomb      Cell
+		corner    Position
+		end       Position
+	}{
+		{"right", DirectionRight, Position{X: 100, Y: 63}, Cell{Row: 2, Col: 3}, Position{X: 100, Y: 63}, Position{X: 180, Y: 60}},
+		{"left", DirectionLeft, Position{X: 100, Y: 63}, Cell{Row: 2, Col: 1}, Position{X: 100, Y: 63}, Position{X: 20, Y: 60}},
+		{"down", DirectionDown, Position{X: 63, Y: 100}, Cell{Row: 3, Col: 2}, Position{X: 63, Y: 100}, Position{X: 60, Y: 180}},
+		{"up", DirectionUp, Position{X: 63, Y: 100}, Cell{Row: 1, Col: 2}, Position{X: 63, Y: 100}, Position{X: 60, Y: 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := testConfig()
+			config.Grid = testOpenGrid(5, 5)
+			config.Rules.TickMS = 20
+			config.Rules.ActorHalfSizePixels = NativeActorHalfSizePixels
+			config.Participants[0].SpeedPixelsPerSecond = 232
+			engine := mustEngine(t, config)
+			engine.actors[0].Position = tc.start
+			engine.bombs = []Bomb{{ID: 1, OwnerID: 2, Cell: tc.bomb, ExplodeAtMS: 9000}}
+			projection, err := engine.ProjectNativeMovement(1, tc.direction)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !projection.HasCorner || projection.Corner != tc.corner || projection.End != tc.end {
+				t.Fatalf("corner projection = %+v, want corner %+v end %+v", projection, tc.corner, tc.end)
+			}
+			for step := 0; step < 40; step++ {
+				engine.moveActorInWorldDirection(0, tc.direction)
+			}
+			if got := engine.actors[0].Position; got != projection.End {
+				t.Fatalf("held physical path ended at %+v, projected %+v", got, projection.End)
+			}
+		})
 	}
 }
 

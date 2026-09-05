@@ -16,6 +16,18 @@ const (
 	NativeSpawnTeams
 )
 
+// NativeSpawnModeForMap selects the client placement consumer supported by
+// the map data. Older ordinary maps store every spawn in group A and leave
+// group B empty; the client uses its single-pool/free placement consumer for
+// those maps even when the room uses standard team rules. Maps with both
+// pools retain the native two-team consumer unless the room is free-rule.
+func NativeSpawnModeForMap(entry mapdata.CompetitiveMap, usesFreeRule bool) NativeSpawnMode {
+	if usesFreeRule || len(entry.SpawnGroupB) == 0 {
+		return NativeSpawnFree
+	}
+	return NativeSpawnTeams
+}
+
 // ValidateNativeSpawnTopology checks one map/team-layout pairing by invoking
 // the same native spawn consumer used by ConfigFromCompetitiveMap. It is used
 // before room mutation and while selecting training maps, so unsupported

@@ -2,15 +2,18 @@ package battleai
 
 import (
 	"fmt"
+	"sync"
 
 	"qqtang/internal/game/battleengine"
 )
 
-// NativePolicyConfig describes the complete dependency-free server policy:
-// native actor inference proposes visible-state actions and the authoritative
-// Go engine may apply a bounded tactical correction to risky decisions.
+// NativePolicyConfig describes the complete dependency-free server policy.
+// Greedy actor inference is the deployment default so formal evaluation and
+// live execution use the same learned decisions. Bounded search remains an
+// explicit diagnostic/teacher option rather than an implicit safety layer.
 type NativePolicyConfig struct {
 	DangerHorizonMS uint32
+	DecisionMS      uint32
 	EnableSearch    bool
 	Search          battleengine.SearchConfig
 }
@@ -35,13 +38,59 @@ func buildActorPolicy(
 	if err := contract.Validate(); err != nil {
 		return nil, fmt.Errorf("validate AI contract: %w", err)
 	}
-	candidates := NeuralCandidates{
-		Contract:        contract,
-		Runner:          runner,
-		DangerHorizonMS: config.DangerHorizonMS,
+	template := &actorPolicyTemplate{
+		contract: contract, runner: runner, config: config,
 	}
-	if !config.EnableSearch {
-		return battleengine.GreedyCandidatePolicy{Candidate: candidates}, nil
+	template.defaultPolicy = template.NewActorPolicy()
+	return template, nil
+}
+
+// actorPolicyTemplate owns immutable model/session resources and creates the
+// actor-local wrapper that owns recurrent memory. The default delegate keeps
+// direct single-actor callers working; live matches always fork one delegate
+// per virtual participant.
+type actorPolicyTemplate struct {
+	contract      Contract
+	runner        LogitRunner
+	config        NativePolicyConfig
+	defaultMu     sync.Mutex
+	defaultPolicy battleengine.Policy
+}
+
+func (template *actorPolicyTemplate) NewActorPolicy() battleengine.Policy {
+	candidates := &NeuralCandidates{
+		Contract:        template.contract,
+		Runner:          template.runner,
+		DangerHorizonMS: template.config.DangerHorizonMS,
+		DecisionMS:      template.config.DecisionMS,
+		resetMemory:     template.contract.RecurrentHiddenSize > 0,
 	}
-	return battleengine.TopKSearchPolicy{Candidate: candidates, Config: config.Search}, nil
+	if !template.config.EnableSearch {
+		return battleengine.GreedyCandidatePolicy{Candidate: candidates}
+	}
+	return battleengine.TopKSearchPolicy{
+		Candidate: candidates, Config: template.config.Search,
+	}
+}
+
+func (template *actorPolicyTemplate) ChooseAction(
+	observation battleengine.Observation,
+	legal []battleengine.Action,
+) (battleengine.Action, error) {
+	template.defaultMu.Lock()
+	defer template.defaultMu.Unlock()
+	return template.defaultPolicy.ChooseAction(observation, legal)
+}
+
+func (template *actorPolicyTemplate) ChooseActionWithSnapshot(
+	snapshot *battleengine.Engine,
+	observation battleengine.Observation,
+	legal []battleengine.Action,
+) (battleengine.Action, error) {
+	template.defaultMu.Lock()
+	defer template.defaultMu.Unlock()
+	if policy, ok := template.defaultPolicy.(battleengine.SnapshotPolicy); ok {
+		return policy.ChooseActionWithSnapshot(snapshot, observation, legal)
+	}
+	return template.defaultPolicy.ChooseAction(observation, legal)
 }

@@ -135,7 +135,7 @@ func (server *Server) handleLobbyMessage(config ListenerConfig, session *connect
 				if roomID != 0 && session.RoomID == roomID {
 					_, _ = server.leaveSessionRoom(session, roomstate.LeaveVoluntary)
 				}
-				response = nil
+				response, _ = game.BuildLocalJoinRoomFailure(data, enterRoomRejectionResult(joinErr), roomID)
 				server.log(logEvent{Level: "warn", Event: "room_quick_join_rejected", ConnectionID: id, AccountID: fmt.Sprint(joinRequest.UIN), RoomID: fmt.Sprint(roomID), MessageID: fmt.Sprintf("0x%04X", game.JoinRoomCommand), Result: "rejected", ErrorContext: joinErr.Error()})
 			} else {
 				result = fmt.Sprintf("qqt_join_room_%d_players_%d", roomID, len(roomResponse.Players))

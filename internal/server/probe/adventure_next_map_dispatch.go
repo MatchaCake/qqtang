@@ -32,7 +32,7 @@ func (server *Server) handleAdventureNextMap(session *connectionSession, data []
 	currentMap, currentExists := server.mapCatalog.Map(session.CurrentMapID)
 	nextMap, hasNext := server.mapCatalog.Next(session.CurrentMapID)
 	validSequence := currentExists && (nextRequest.ContinueID == uint32(currentMap.SequenceID) || nextRequest.ContinueID == game.NoRemoteContinueFileIDWire)
-	validTarget := adventureNextMapTargetMatches(nextRequest.NextMapID, nextMap.ID, hasNext)
+	validTarget := adventureNextMapTargetMatches(nextRequest.NextMapID, session.CurrentMapID, nextMap.ID, hasNext)
 	if err == nil && (!currentExists || nextRequest.PlayerID != session.Profile.PlayerID || !validSequence || !validTarget) {
 		err = fmt.Errorf("invalid next-map request player=%d continue=%d next_map=%d current_map=%d", nextRequest.PlayerID, nextRequest.ContinueID, nextRequest.NextMapID, session.CurrentMapID)
 	}
@@ -40,18 +40,6 @@ func (server *Server) handleAdventureNextMap(session *connectionSession, data []
 	var battle *match.AdventureBattle
 	if err == nil {
 		battle, err = server.adventureBattle(session.CurrentGameID)
-		var observedDeaths, expectedDeaths uint32
-		if err == nil {
-			observedDeaths, expectedDeaths, err = battle.ConfirmStageDoorway()
-		}
-		if err == nil && expectedDeaths != 0 && observedDeaths < expectedDeaths {
-			server.log(logEvent{
-				Level: "warn", Event: "adventure_doorway_confirmed_with_incomplete_death_telemetry",
-				ConnectionID: session.connectionID, AccountID: fmt.Sprint(session.UIN),
-				RoomID: fmt.Sprint(session.RoomID),
-				Result: fmt.Sprintf("map_%d_observed_%d_expected_%d", session.CurrentMapID, observedDeaths, expectedDeaths),
-			})
-		}
 		if err == nil {
 			transition, err = battle.PrepareNextStage(nextRequest.PlayerID)
 		}

@@ -64,7 +64,7 @@ func TestPlacedSlowFieldTriggersOnceAndExpires(t *testing.T) {
 	if len(engine.fieldObjects) != 0 || engine.actors[1].MovementStatus != MovementStatusSlow || len(events) < 2 {
 		t.Fatalf("slow field result actor=%+v objects=%+v events=%+v", engine.actors[1], engine.fieldObjects, events)
 	}
-	engine.elapsedMS = engine.actors[1].MovementStatusExpiresAt
+	engine.elapsedMS = engine.actors[1].MovementStatusExpiresAt + 1
 	engine.expireMovementStatuses()
 	if engine.actors[1].MovementStatus != MovementStatusNone {
 		t.Fatalf("slow status did not expire: %+v", engine.actors[1])
@@ -259,7 +259,7 @@ func TestNativeRescueAndRemoteDetonationActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actor.State != ActorActive || actorHeldActionCount(actor, 63) != 0 || actor.Position.X <= startX {
+	if actor.State != ActorActive || actorHeldActionCount(actor, 63) != 0 || actor.Position.X != startX {
 		t.Fatalf("action 63 did not rescue/consume: %+v", *actor)
 	}
 	foundRescue := false
@@ -273,6 +273,11 @@ func TestNativeRescueAndRemoteDetonationActions(t *testing.T) {
 	}
 	if !foundRescue {
 		t.Fatalf("action 63 did not emit rescue event: %+v", events)
+	}
+	// Input handler 006112af skipped the trapped actor before the fork's
+	// later item callback. The still-held direction starts on the next frame.
+	if _, err := engine.Step([]Action{{PlayerID: 1, Move: DirectionRight}}); err != nil || actor.Position.X <= startX {
+		t.Fatalf("held direction did not resume after fork: actor=%+v err=%v", *actor, err)
 	}
 	engine.bombs = []Bomb{{ID: 1, OwnerID: 1, Cell: Cell{Row: 0, Col: 0}, Power: 1, ExplodeAtMS: 9_000}}
 	engine.nextBombID = 2
@@ -296,6 +301,36 @@ func TestAxeTransformationOwnsActionFortySixLifecycle(t *testing.T) {
 	engine.endTransformation(&engine.actors[0], TransformationEndExpired, 0)
 	if got := actorHeldActionCount(&engine.actors[0], 46); got != 0 {
 		t.Fatalf("axe action survived transformation: %d", got)
+	}
+}
+
+func TestNativeProjectileMissKeepsRayEndpointAndBlockedUseKeepsInventory(t *testing.T) {
+	for _, actionID := range []uint8{44, 46} {
+		for _, direction := range []Direction{DirectionRight, DirectionUp, DirectionLeft, DirectionDown} {
+			config := testConfig()
+			config.Grid = testOpenGrid(15, 13)
+			config.Rules.NativeOutcomeAuthority = true
+			config.Participants[0].Source = ParticipantVirtualAI
+			config.Participants[0].Spawn = Cell{Row: 6, Col: 7}
+			engine := mustEngine(t, config)
+			actor := &engine.actors[0]
+			actor.Facing = direction
+			grantHeldAction(actor, actionID, 2)
+			events, used := engine.useHeldAction(0, actionID)
+			if !used || len(events) != 1 || events[0].BombID != 0 || events[0].ProjectileDirection != direction {
+				t.Fatalf("action %d direction %d miss request: %+v used=%v", actionID, direction, events, used)
+			}
+			want := map[Direction]Cell{DirectionRight: {6, 14}, DirectionUp: {0, 7}, DirectionLeft: {6, 0}, DirectionDown: {12, 7}}[direction]
+			if events[0].ProjectileTargetCell != want {
+				t.Fatalf("action %d direction %d target=%+v, want %+v", actionID, direction, events[0].ProjectileTargetCell, want)
+			}
+			dx, dy, _ := direction.delta()
+			adjacent := Cell{Row: 6 + int16(dy), Col: 7 + int16(dx)}
+			engine.grid.Cells[engine.gridIndex(adjacent)] = Tile{Kind: CellSolid}
+			if events, used = engine.useHeldAction(0, actionID); used || len(events) != 0 || actorHeldActionCount(actor, actionID) != 2 {
+				t.Fatalf("blocked action %d direction %d emitted/consumed: %+v/%v", actionID, direction, events, used)
+			}
+		}
 	}
 }
 
@@ -336,7 +371,7 @@ func TestDirectionalActionDetonatesFirstBombAfterNativeFlight(t *testing.T) {
 	if len(engine.projectiles) != 1 || len(engine.bombs) != 1 {
 		t.Fatalf("directional action did not begin flight: projectile=%+v bombs=%+v", engine.projectiles, engine.bombs)
 	}
-	for engine.elapsedMS < nativeActionProjectileDurationMS {
+	for engine.elapsedMS <= nativeActionProjectileDurationMS {
 		if _, err := engine.Step(nil); err != nil {
 			t.Fatal(err)
 		}

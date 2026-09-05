@@ -2,6 +2,45 @@ package battleengine
 
 import "testing"
 
+func TestDevelopmentSearchHorizonMustReachNativeWallDestruction(t *testing.T) {
+	config := testConfig()
+	config.Grid = testOpenGrid(5, 5)
+	wall := Cell{Row: 1, Col: 2}
+	config.Grid.Cells[int(wall.Row)*5+int(wall.Col)] = Tile{Kind: CellBreakable, Durability: 1}
+	config.Rules.TickMS = 20
+	config.Rules.BombFuseMS = NativeBombFuseMS
+	config.Rules.FlameDurationMS = NativeFlameDurationMS
+	config.Rules.RoundDurationMS = 10_000
+	config.Rules.ActorHalfSizePixels = NativeActorHalfSizePixels
+	config.Participants = []Participant{
+		{PlayerID: 1, TeamID: 1, Source: ParticipantVirtualAI, Spawn: Cell{Row: 1, Col: 1}, SpeedPixelsPerSecond: 160, BombCapacity: 1, BombPower: 1},
+		{PlayerID: 2, TeamID: 2, Source: ParticipantHuman, Spawn: Cell{Row: 4, Col: 4}, SpeedPixelsPerSecond: 160, BombCapacity: 1, BombPower: 1},
+	}
+	engine := mustEngine(t, config)
+	observation, err := engine.Observation(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := Action{PlayerID: 1, Move: DirectionDown, PlaceBomb: true}
+	values := make([]float64, 2)
+	for index, horizon := range []uint32{800, NativeBombFuseMS + NativeFlameDurationMS + 100} {
+		value, survives, err := searchActionValue(engine, observation, action, SearchConfig{
+			HorizonMS: horizon, DangerHorizonMS: NativeBombFuseMS + NativeFlameDurationMS,
+		}.normalized(config.Rules.TickMS))
+		if err != nil || !survives {
+			t.Fatalf("horizon %d: survives=%v err=%v", horizon, survives, err)
+		}
+		values[index] = value
+	}
+	if values[0] != 0 || values[1] < 0.75 {
+		t.Fatalf("pre-fuse search must not see future wall credit: short=%v full=%v", values[0], values[1])
+	}
+	unchanged, _ := engine.grid.Cell(wall)
+	if unchanged.Kind != CellBreakable || len(engine.bombs) != 0 || engine.elapsedMS != 0 {
+		t.Fatal("offline horizon comparison mutated the source world")
+	}
+}
+
 type fixedCandidates []ScoredAction
 
 func (candidates fixedCandidates) CandidateActions(_ Observation, _ []Action, limit int) ([]ScoredAction, error) {
@@ -270,7 +309,7 @@ func TestTacticalSafetyUsesRouteAwareEscapeDeadline(t *testing.T) {
 	config := testConfig()
 	config.Grid = testOpenGrid(5, 3)
 	config.Rules.TickMS = 20
-	config.Rules.BombFuseMS = 1_000
+	config.Rules.BombFuseMS = 999
 	config.Rules.FlameDurationMS = 200
 	config.Participants = []Participant{
 		{PlayerID: 1, TeamID: 1, Source: ParticipantVirtualAI, Spawn: Cell{Row: 1, Col: 1}, SpeedPixelsPerSecond: 85, BombCapacity: 2, BombPower: 2},
@@ -348,5 +387,37 @@ func TestGreedyCandidatePolicyDoesNotRerankActorChoice(t *testing.T) {
 	}
 	if chosen != place {
 		t.Fatalf("greedy policy chose %+v, want actor top-1 %+v", chosen, place)
+	}
+}
+
+func TestSearchPickupProgressValueUsesEffectiveAttributeGain(t *testing.T) {
+	before := Actor{Participant: Participant{
+		BombCapacity: 2,
+		BombPower:    4,
+		SpeedRate:    3,
+	}}
+	after := before
+	after.BombCapacity = 8
+	after.BombPower = 6
+	after.SpeedRate = 4
+
+	const want = 9 * searchDevelopmentUnitValue
+	if got := searchPickupProgressValue(before, after, SearchConfig{TrapValue: 12}); got != want {
+		t.Fatalf("attribute pickup progress value = %v, want %v", got, want)
+	}
+	if got := searchPickupProgressValue(after, after, SearchConfig{TrapValue: 12}); got != 0 {
+		t.Fatalf("capped/no-op attribute pickup progress value = %v, want 0", got)
+	}
+}
+
+func TestSearchPickupProgressValueTreatsForkAsInventoryAndRecoverableHit(t *testing.T) {
+	before := Actor{}
+	after := before
+	after.HeldActions[0] = HeldActionSlot{ActionID: 63, Count: 1}
+
+	const trapValue = 12
+	want := searchDevelopmentUnitValue + trapValue
+	if got := searchPickupProgressValue(before, after, SearchConfig{TrapValue: trapValue}); got != want {
+		t.Fatalf("fork pickup progress value = %v, want %v", got, want)
 	}
 }

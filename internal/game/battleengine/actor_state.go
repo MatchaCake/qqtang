@@ -8,15 +8,18 @@ import (
 
 func (engine *Engine) resolveActorContacts() []Event {
 	events := make([]Event, 0)
-	pending := make(map[nativeContactRequestKey]struct{})
+	var pending map[nativeContactRequestKey]struct{}
 	for actorIndex := range engine.actors {
 		actor := &engine.actors[actorIndex]
-		if actor.State != ActorActive {
+		if actor.State == ActorEliminated || actor.nativePreviousPosition.Cell() == actor.Position.Cell() {
 			continue
 		}
 		for targetIndex := range engine.actors {
 			target := &engine.actors[targetIndex]
-			if target.State != ActorTrapped || actor.PlayerID == target.PlayerID || actor.Position.Cell() != target.Position.Cell() {
+			// Rule-1 contact producer 0060c148 tests both coordinate deltas
+			// against 41.0 (strictly), independently of the actors' grid cells.
+			dx, dy := actor.Position.X-target.Position.X, actor.Position.Y-target.Position.Y
+			if target.State != ActorTrapped || actor.PlayerID == target.PlayerID || dx <= -41 || dx >= 41 || dy <= -41 || dy >= 41 {
 				continue
 			}
 			if engine.rules.NativeOutcomeAuthority {
@@ -28,6 +31,9 @@ func (engine *Engine) resolveActorContacts() []Event {
 				}
 				rescue := actor.TeamID == target.TeamID
 				key := nativeContactRequestKey{sourceID: actor.PlayerID, targetID: target.PlayerID, rescue: rescue}
+				if pending == nil {
+					pending = make(map[nativeContactRequestKey]struct{})
+				}
 				pending[key] = struct{}{}
 				if _, alreadyRequested := engine.nativeContactRequests[key]; alreadyRequested {
 					continue
@@ -36,12 +42,13 @@ func (engine *Engine) resolveActorContacts() []Event {
 				if rescue {
 					kind = EventActorRescueRequested
 				}
-				events = append(events, Event{Kind: kind, TimeMS: engine.elapsedMS, PlayerID: actor.PlayerID, TargetID: target.PlayerID, Cell: target.Position.Cell(), Position: target.Position})
+				events = append(events, Event{Kind: kind, TimeMS: engine.elapsedMS, PlayerID: actor.PlayerID, TargetID: target.PlayerID, Cell: actor.Position.Cell(), Position: actor.Position})
 				continue
 			}
 			if actor.TeamID == target.TeamID {
 				target.State = ActorActive
 				target.TrappedBy = 0
+				target.TrappedByBombID = 0
 				target.TrapExpiresAt = 0
 				events = append(events, Event{Kind: EventActorRescued, TimeMS: engine.elapsedMS, PlayerID: actor.PlayerID, TargetID: target.PlayerID, Cell: target.Position.Cell(), Position: target.Position})
 			} else {
@@ -81,16 +88,18 @@ func (engine *Engine) applyFlameHazardsMatching(accept func(*Actor) bool) []Even
 			if flame.ImpactAtMS != engine.elapsedMS || actor.Position.Cell() != flame.Cell {
 				continue
 			}
+			engine.resetActorOnHit(actor)
 			if actor.TransformationSceneID != 0 {
 				events = append(events, engine.endTransformation(actor, TransformationEndHit, flame.OwnerID))
 				break
 			}
 			actor.State = ActorTrapped
 			actor.TrappedBy = flame.OwnerID
+			actor.TrappedByBombID = flame.BombID
 			if duration := engine.trapDuration(actor); duration != 0 {
 				actor.TrapExpiresAt = saturatingAdd(engine.elapsedMS, duration)
 			}
-			events = append(events, Event{Kind: EventActorTrapped, TimeMS: engine.elapsedMS, PlayerID: flame.OwnerID, TargetID: actor.PlayerID, Cell: actor.Position.Cell(), Position: actor.Position})
+			events = append(events, Event{Kind: EventActorTrapped, TimeMS: engine.elapsedMS, PlayerID: flame.OwnerID, TargetID: actor.PlayerID, BombID: flame.BombID, Cell: actor.Position.Cell(), Position: actor.Position})
 			break
 		}
 	}
@@ -101,7 +110,7 @@ func (engine *Engine) expireTransformations() []Event {
 	events := make([]Event, 0)
 	for index := range engine.actors {
 		actor := &engine.actors[index]
-		if actor.TransformationSceneID == 0 || actor.TransformationExpiresAt == 0 || actor.TransformationExpiresAt > engine.elapsedMS {
+		if actor.TransformationSceneID == 0 || actor.TransformationExpiresAt == 0 || actor.TransformationExpiresAt >= engine.elapsedMS {
 			continue
 		}
 		if engine.rules.NativeOutcomeAuthority {
@@ -113,7 +122,7 @@ func (engine *Engine) expireTransformations() []Event {
 		// of this grid test.
 		if engine.actorCapabilities(actor, actor.Facing).RecoverOnlyOnOpenCell {
 			tile, inside := engine.grid.Cell(actor.Position.Cell())
-			if !inside || tile.Kind != CellOpen {
+			if !inside || tile.Kind != CellOpen || tile.MapElementOccupied {
 				continue
 			}
 		}
@@ -229,13 +238,16 @@ func (engine *Engine) applyVerifiedActorHit(playerID, sourceID uint16, position 
 		if actor.TransformationSceneID == 0 {
 			return Event{}, false, nil
 		}
+		engine.resetActorOnHit(actor)
 		return engine.endTransformation(actor, TransformationEndHit, sourceID), true, nil
 	}
 	if actor.State == ActorTrapped {
 		return Event{}, false, nil
 	}
+	engine.resetActorOnHit(actor)
 	actor.State = ActorTrapped
 	actor.TrappedBy = sourceID
+	actor.TrappedByBombID = 0
 	if duration := engine.trapDuration(actor); duration != 0 {
 		actor.TrapExpiresAt = saturatingAdd(engine.elapsedMS, duration)
 	}
@@ -244,7 +256,7 @@ func (engine *Engine) applyVerifiedActorHit(playerID, sourceID uint16, position 
 
 // ApplyVerifiedRescue mirrors NOTIFY_PLAYER_BE_SAVED without repeating the
 // peer visual. It accepts both human and virtual targets and is idempotent.
-func (engine *Engine) ApplyVerifiedRescue(sourceID, targetID uint16, position Position) (Event, bool, error) {
+func (engine *Engine) ApplyVerifiedRescue(sourceID, targetID uint16, _ Position) (Event, bool, error) {
 	if engine == nil {
 		return Event{}, false, fmt.Errorf("battle engine is nil")
 	}
@@ -259,19 +271,24 @@ func (engine *Engine) ApplyVerifiedRescue(sourceID, targetID uint16, position Po
 	if target.State != ActorTrapped {
 		return Event{}, false, nil
 	}
-	if target.Source == ParticipantHuman && position != (Position{}) {
-		if err := engine.ApplyVerifiedMovementCheckpoint(targetID, position); err != nil {
-			return Event{}, false, err
-		}
-	}
+	// FAB's coordinates belong to the rescuer. Native consumer 006063bd
+	// restores the target through 005acc39 without changing its position.
 	target.State = ActorActive
 	target.TrappedBy = 0
+	target.TrappedByBombID = 0
 	target.TrapExpiresAt = 0
 	return Event{Kind: EventActorRescued, TimeMS: engine.elapsedMS, PlayerID: sourceID, TargetID: targetID, Cell: target.Position.Cell(), Position: target.Position}, true, nil
 }
 
 func (engine *Engine) actorHarmProtected(actor *Actor) bool {
 	return actor != nil && actor.HarmProtectionExpiresAt > engine.elapsedMS
+}
+
+func (engine *Engine) resetActorOnHit(actor *Actor) {
+	// Native 005acaab clears the movement modifier before both hit paths.
+	// The normal branch and avatar callback 005f78bf both face down (3).
+	engine.clearMovementStatus(actor)
+	actor.Facing = DirectionDown
 }
 
 func (engine *Engine) trapDuration(actor *Actor) uint32 {
@@ -375,6 +392,7 @@ func (engine *Engine) eliminateActor(actorIndex int, killerID uint16) []Event {
 
 func (engine *Engine) eliminateActorWithDrops(actorIndex int, killerID uint16, verifiedDrops []Pickup) []Event {
 	actor := &engine.actors[actorIndex]
+	trappingBombID := actor.TrappedByBombID
 	if definition, ok := sceneelement.NativeTransformation(sceneelement.ID(actor.TransformationSceneID)); ok && definition.GrantedActionID != 0 {
 		removeHeldAction(actor, definition.GrantedActionID)
 	}
@@ -391,6 +409,7 @@ func (engine *Engine) eliminateActorWithDrops(actorIndex int, killerID uint16, v
 	events := engine.installDeathDrops(actor.PlayerID, drops)
 	actor.State = ActorEliminated
 	actor.TrappedBy = 0
+	actor.TrappedByBombID = 0
 	actor.TrapExpiresAt = 0
 	actor.TransformationSceneID = 0
 	actor.AvatarRoleID = 0
@@ -398,6 +417,6 @@ func (engine *Engine) eliminateActorWithDrops(actorIndex int, killerID uint16, v
 	actor.HarmProtectionExpiresAt = 0
 	actor.MovementStatus = MovementStatusNone
 	actor.MovementStatusExpiresAt = 0
-	events = append(events, Event{Kind: EventActorEliminated, TimeMS: engine.elapsedMS, PlayerID: killerID, TargetID: actor.PlayerID, Cell: actor.Position.Cell(), Position: actor.Position, TeamID: actor.TeamID})
+	events = append(events, Event{Kind: EventActorEliminated, TimeMS: engine.elapsedMS, PlayerID: killerID, TargetID: actor.PlayerID, BombID: trappingBombID, Cell: actor.Position.Cell(), Position: actor.Position, TeamID: actor.TeamID})
 	return events
 }

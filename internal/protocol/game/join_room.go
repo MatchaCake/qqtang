@@ -10,6 +10,7 @@ const (
 	JoinRoomRequestSchema     = 0x041D
 	JoinRoomResponseOldSchema = 0x0805
 	joinRoomRequestSize       = 9
+	joinRoomFailureSize       = 44
 )
 
 type JoinRoomResponseOld struct {
@@ -81,6 +82,28 @@ func (response JoinRoomResponseOld) MarshalNetworkBinary() ([]byte, error) {
 
 func BuildLocalJoinRoomSuccess(requestPacket []byte, response JoinRoomResponseOld) ([]byte, error) {
 	return buildLocalJoinRoomSuccess(requestPacket, response, nil)
+}
+
+// BuildLocalJoinRoomFailure emits the complete zero-count
+// RESPONSE_JOIN_ROOM_OLD shape. The legacy client keeps the quick-join UI
+// request pending until it receives this response, including when no matching
+// room exists. The fixed fields differ from RESPONSE_ENTER_ROOM_OLD because
+// JOIN_ROOM_OLD includes the 20-byte room name and omits WeddingModeID.
+func BuildLocalJoinRoomFailure(requestPacket []byte, resultID EnterRoomResultID, roomID uint16) ([]byte, error) {
+	if resultID == EnterRoomResultSuccess {
+		return nil, fmt.Errorf("join-room failure result must be non-zero")
+	}
+	if _, err := DecodeLocalJoinRoomRequest(requestPacket); err != nil {
+		return nil, err
+	}
+	request, err := decodeLocalPacket(requestPacket)
+	if err != nil {
+		return nil, err
+	}
+	payload := make([]byte, joinRoomFailureSize)
+	binary.BigEndian.PutUint16(payload[0:2], uint16(resultID))
+	binary.BigEndian.PutUint16(payload[2:4], roomID)
+	return buildLocalResponse(requestPacket, request, JoinRoomCommand, payload, nil)
 }
 
 func BuildLocalJoinRoomSuccessWithReader(requestPacket []byte, response JoinRoomResponseOld, entropy io.Reader) ([]byte, error) {

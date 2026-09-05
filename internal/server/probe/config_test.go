@@ -42,6 +42,23 @@ func TestLoadConfigAppliesLANHostSettings(t *testing.T) {
 	}
 }
 
+func TestLoadConfigDerivesONNXMetadataPathFromModel(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "server.json")
+	data := []byte(`{"competitive_ai":{"enabled":true,"backend":"onnxruntime","model_path":"models/actor.onnx","shared_library_path":"runtime/onnxruntime.dll"},"listeners":[{"name":"game","network":"tcp","address":"127.0.0.1:18000","response":{}}]}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(directory, "models", "actor.onnx.json")
+	if config.CompetitiveAI.MetadataPath != want {
+		t.Fatalf("derived ONNX metadata path = %q, want %q", config.CompetitiveAI.MetadataPath, want)
+	}
+}
+
 func TestLoadConfigLocalGMIgnoresStoredCredentials(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "network.json"), []byte(`{"schema_version":3,"mode":"local","server_ip":"127.0.0.1","client_server_ip":"127.0.0.1","gm_remote":false}`), 0o600); err != nil {

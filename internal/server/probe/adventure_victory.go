@@ -50,18 +50,9 @@ func (server *Server) scheduleAdventureFinalVictory(schedule adventureFinalVicto
 		RoomID: strconv.FormatUint(uint64(schedule.roomID), 10),
 		Result: "game_" + strconv.FormatUint(uint64(schedule.gameID), 10) + "_grace_" + adventureFinalLootGrace.String(),
 	})
-	server.wg.Add(1)
-	go func() {
-		defer server.wg.Done()
-		timer := time.NewTimer(adventureFinalLootGrace)
-		defer timer.Stop()
-		select {
-		case <-server.done:
-			return
-		case <-timer.C:
-		}
+	server.runAfter(adventureFinalLootGrace, func() {
 		server.completeAdventureFinalVictory(schedule)
-	}()
+	})
 }
 
 // completeAdventureFinalVictory resolves the room from the current live

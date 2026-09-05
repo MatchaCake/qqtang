@@ -278,6 +278,19 @@ func (engine *Engine) Actors() []Actor {
 	return append([]Actor(nil), engine.actors...)
 }
 
+// ClearPublicBehaviorMemories starts a new controller-history boundary without
+// changing physical battle state. Offline state replay may attach different
+// policies to the cloned actors, so the previous controllers' public action
+// frequencies must not be presented as evidence about the new controllers.
+func (engine *Engine) ClearPublicBehaviorMemories() {
+	if engine == nil {
+		return
+	}
+	for index := range engine.actors {
+		engine.actors[index].PublicBehavior = PublicBehaviorMemory{}
+	}
+}
+
 func (engine *Engine) Bombs() []Bomb {
 	if engine == nil {
 		return nil

@@ -443,13 +443,9 @@ func (server *Server) createAccount(writer http.ResponseWriter, request *http.Re
 	profile := server.seedProfile(input.UIN)
 	profile.Nickname = nickname
 	profile.Gender = input.Gender
-	if err := server.players.Save(request.Context(), input.UIN, profile); err != nil {
-		writeError(writer, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := server.store.SetPassword(request.Context(), input.UIN, input.Password); err != nil {
-		if _, cleanupErr := server.store.Delete(request.Context(), input.UIN); cleanupErr != nil {
-			writeInternalError(writer, fmt.Errorf("set password for new account: %v; remove incomplete account: %w", err, cleanupErr))
+	if err := server.store.CreateAccount(request.Context(), input.UIN, profile, input.Password); err != nil {
+		if errors.Is(err, persistence.ErrAccountExists) {
+			writeError(writer, http.StatusConflict, "该账号已存在")
 			return
 		}
 		writeError(writer, http.StatusBadRequest, err.Error())
@@ -542,16 +538,14 @@ func (server *Server) handleAccountProfile(writer http.ResponseWriter, request *
 		if !decodeJSONBody(writer, request, &input) {
 			return
 		}
-		profile, err := server.store.Load(request.Context(), uin)
-		if err != nil {
+		_, err := server.players.UpdateProfile(request.Context(), uin, func(profile *game.PlayerProfile) error {
+			return applyAccountUpdate(profile, input)
+		})
+		if errors.Is(err, sql.ErrNoRows) {
 			writeStoreError(writer, err)
 			return
 		}
-		if err = applyAccountUpdate(&profile, input); err != nil {
-			writeError(writer, http.StatusBadRequest, err.Error())
-			return
-		}
-		if err = server.players.Save(request.Context(), uin, profile); err != nil {
+		if err != nil {
 			writeError(writer, http.StatusBadRequest, err.Error())
 			return
 		}

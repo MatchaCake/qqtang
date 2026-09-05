@@ -242,18 +242,9 @@ func (server *Server) scheduleAdventureStageSceneClose(roomID, playerID uint16, 
 		AccountID: fmt.Sprint(session.UIN), RoomID: fmt.Sprint(roomID),
 		Result: fmt.Sprintf("player_%d_grace_%s", playerID, adventureStageResultSceneGrace),
 	})
-	server.wg.Add(1)
-	go func() {
-		defer server.wg.Done()
-		timer := time.NewTimer(adventureStageResultSceneGrace)
-		defer timer.Stop()
-		select {
-		case <-server.done:
-			return
-		case <-timer.C:
-		}
+	server.runAfter(adventureStageResultSceneGrace, func() {
 		server.closeDetachedAdventureStageScene(roomID, playerID, session, template)
-	}()
+	})
 }
 
 func (server *Server) closeDetachedAdventureStageScene(roomID, playerID uint16, session *connectionSession, template []byte) bool {

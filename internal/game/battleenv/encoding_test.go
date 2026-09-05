@@ -1,6 +1,7 @@
 package battleenv
 
 import (
+	"reflect"
 	"testing"
 
 	"qqtang/internal/game/battleengine"
@@ -30,6 +31,42 @@ func TestHeldActionFeaturesUseFixedNativeIdentity(t *testing.T) {
 	}
 	if values[35] != 0 {
 		t.Fatalf("pickup slot order leaked into ActionID 42 feature: %v", values[35])
+	}
+}
+
+func TestVisiblePickupFactsExposeEffectiveUpgradeAndForkIdentity(t *testing.T) {
+	grid := battleengine.Grid{Width: 4, Height: 1, Cells: []battleengine.Tile{
+		{Kind: battleengine.CellOpen}, {Kind: battleengine.CellOpen},
+		{Kind: battleengine.CellOpen}, {Kind: battleengine.CellOpen},
+	}}
+	self := battleengine.ActorObservation{
+		PlayerID: 1, TeamID: 1, Cell: battleengine.Cell{},
+		BombCapacity: 2, MaxBombCapacity: 8,
+		BombPower: 8, MaxBombPower: 9,
+		Capabilities: battleengine.ActorCapabilities{CanCollectItems: true},
+	}
+	observation := battleengine.Observation{
+		PlayerID: 1, Grid: grid, Actors: []battleengine.ActorObservation{self},
+		Pickups: []battleengine.Pickup{
+			{SceneID: battleengine.SceneBombCapacityLarge, Cell: battleengine.Cell{Col: 1}, State: battleengine.PickupAvailable},
+			{SceneID: battleengine.SceneBombPowerLarge, Cell: battleengine.Cell{Col: 2}, State: battleengine.PickupAvailable},
+			{SceneID: 24, Cell: battleengine.Cell{Col: 3}, State: battleengine.PickupAvailable},
+		},
+	}
+	tensors := newTensorBatch(1, 1, 1, 4)
+	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
+		t.Fatal(err)
+	}
+	at := func(channel, col int) float32 { return tensors.Spatial[channel*4+col] }
+	if at(20, 1) != 1 || at(pickupAttributeAmountChannel, 1) != 1 || at(pickupEffectiveGainChannel, 1) != 0.75 {
+		t.Fatalf("large capacity pickup facts = category %v amount %v gain %v", at(20, 1), at(pickupAttributeAmountChannel, 1), at(pickupEffectiveGainChannel, 1))
+	}
+	if at(21, 2) != 1 || at(pickupAttributeAmountChannel, 2) != 1 || at(pickupEffectiveGainChannel, 2) != 0.125 {
+		t.Fatalf("capped large power pickup facts = category %v amount %v gain %v", at(21, 2), at(pickupAttributeAmountChannel, 2), at(pickupEffectiveGainChannel, 2))
+	}
+	forkChannel := pickupActionChannelStart + 5 // native ActionID 63
+	if at(24, 3) != 1 || at(forkChannel, 3) != 1 {
+		t.Fatalf("fork pickup facts = category %v identity %v", at(24, 3), at(forkChannel, 3))
 	}
 }
 
@@ -74,7 +111,7 @@ func TestMapElementOccupancyAndPushProgressMatchNativeGridSemantics(t *testing.T
 		}},
 	}
 	tensors := newTensorBatch(1, 1, 1, 2)
-	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.ActionMask{}); err != nil {
+	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
 		t.Fatal(err)
 	}
 	at := func(channel, col int) float32 { return tensors.Spatial[channel*2+col] }
@@ -103,7 +140,7 @@ func TestPublicBehaviorMemoryUsesActorCellChannels(t *testing.T) {
 		},
 	}
 	tensors := newTensorBatch(1, 1, 1, 2)
-	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.ActionMask{}); err != nil {
+	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
 		t.Fatal(err)
 	}
 	at := func(channel, col int) float32 { return tensors.Spatial[channel*2+col] }
@@ -138,7 +175,7 @@ func TestPublicCoalitionContextDistinguishesEnemyTeamPartitions(t *testing.T) {
 		},
 	}
 	tensors := newTensorBatch(1, 1, 1, 4)
-	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.ActionMask{}); err != nil {
+	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
 		t.Fatal(err)
 	}
 	at := func(channel, col int) float32 { return tensors.Spatial[channel*4+col] }
@@ -159,7 +196,7 @@ func TestPublicCoalitionContextDistinguishesEnemyTeamPartitions(t *testing.T) {
 
 	observation.PlayerID = 4
 	secondRole := newTensorBatch(1, 1, 1, 4)
-	if err := encodeActor(&secondRole, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.ActionMask{}); err != nil {
+	if err := encodeActor(&secondRole, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
 		t.Fatal(err)
 	}
 	roleAt := func(channel, col int) float32 { return secondRole.Spatial[channel*4+col] }
@@ -211,7 +248,7 @@ func TestVisibleTransformationsAndRecoveryProtectionUseSpatialChannels(t *testin
 		},
 	}
 	tensors := newTensorBatch(1, 3, 3, 3)
-	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.ActionMask{}); err != nil {
+	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
 		t.Fatal(err)
 	}
 	at := func(channel, row, col int) float32 {
@@ -251,7 +288,7 @@ func TestDangerChainAndVisibleActorDetailsUseDerivedChannels(t *testing.T) {
 		ImpactWaves:      []uint8{0, 0, 2, 0, 0, 0, 0, 0, 0},
 	}
 	tensors := newTensorBatch(1, 2, 3, 3)
-	if err := encodeActor(&tensors, 0, 0, observation, danger, battleengine.ActionMask{}); err != nil {
+	if err := encodeActor(&tensors, 0, 0, observation, danger, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
 		t.Fatal(err)
 	}
 	at := func(channel, row, col int) float32 { return tensors.Spatial[(channel*3+row)*3+col] }
@@ -286,7 +323,7 @@ func TestDeadlineFeaturesUseAbsoluteNativeClockAndThrownLanding(t *testing.T) {
 		}},
 	}
 	tensors := newTensorBatch(1, 1, 1, 1)
-	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.ActionMask{}); err != nil {
+	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
 		t.Fatal(err)
 	}
 	got := tensors.Spatial[14]
@@ -337,7 +374,7 @@ func TestVisibleTacticalRoutesExposeStableReachableCandidates(t *testing.T) {
 	}
 
 	tensors := newTensorBatch(1, 1, int(grid.Height), int(grid.Width))
-	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.ActionMask{}); err != nil {
+	if err := encodeActor(&tensors, 0, 0, observation, battleengine.DangerTimeline{}, battleengine.TacticalConsequences{}, battleengine.ActionMask{}); err != nil {
 		t.Fatal(err)
 	}
 	if tensors.Scalars[64] != 1 || tensors.Scalars[69] != 1 || tensors.Scalars[76] != 1 || tensors.Scalars[81] != 1 {
@@ -345,6 +382,80 @@ func TestVisibleTacticalRoutesExposeStableReachableCandidates(t *testing.T) {
 	}
 	if tensors.Scalars[68] == 0 || tensors.Scalars[73] == 0 || tensors.Scalars[78] == 0 || tensors.Scalars[83] == 0 {
 		t.Fatalf("route presence/distances missing: %v", tensors.Scalars[64:84])
+	}
+}
+
+func TestTacticalConsequencesUseSchemaElevenScalarTail(t *testing.T) {
+	facts := battleengine.TacticalConsequences{
+		CurrentKnownDangerReachable:         [5]float32{0.1, 0.2, 0.3, 0.4, 0.5},
+		BombKnownDangerReachable:            [5]float32{0.6, 0.7, 0.8, 0.9, 1},
+		KnownDangerProjectionValid:          true,
+		BombLegal:                           true,
+		BombKnownDangerProjectionValid:      true,
+		BombEarliestWholeCellRefugeEstimate: 0.25,
+		EnemyCurrentKnownReachable:          [3]float32{0.7, 0.6, 0.5},
+		EnemyBombKnownReachable:             [3]float32{0.4, 0.3, 0.2},
+		EnemyKnownReachReduction:            [3]float32{0.3, 0.3, 0.3},
+		AllyKnownReachReduction:             0.1,
+		NewEnemyThreatRatio:                 1,
+		NewAllyThreatRatio:                  0.5,
+		NewBreakableThreatRatio:             0.75,
+		AcceleratedChainRatio:               0.25,
+	}
+	values := make([]float32, ScalarFeatures)
+	setTacticalConsequenceFeatures(values, facts)
+	want := []float32{
+		0.1, 0.2, 0.3, 0.4, 0.5,
+		0.6, 0.7, 0.8, 0.9, 1,
+		1, 1, 0.25,
+		0.7, 0.6, 0.5,
+		0.4, 0.3, 0.2,
+		0.3, 0.3, 0.3,
+		0.1, 1, 0.5, 0.75, 0.25, 1,
+	}
+	if got := values[84:112]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("schema-11 tactical tail = %v, want %v", got, want)
+	}
+}
+
+func TestDirectionalTacticalConsequencesUseSchemaTwelveScalarTail(t *testing.T) {
+	facts := battleengine.TacticalConsequences{}
+	facts.CurrentDirectionKnownDangerReachable[battleengine.DirectionRight] = [5]float32{
+		0.1, 0.2, 0.3, 0.4, 0.5,
+	}
+	facts.BombDirectionKnownDangerReachable[battleengine.DirectionLeft] = [5]float32{
+		0.6, 0.7, 0.8, 0.9, 1,
+	}
+	values := make([]float32, ScalarFeatures)
+	setTacticalConsequenceFeatures(values, facts)
+
+	currentStart := 112 + int(battleengine.DirectionRight)*5
+	bombStart := 112 + battleengine.TacticalMovementCandidateCount*5 +
+		int(battleengine.DirectionLeft)*5
+	if got, want := values[currentStart:currentStart+5], []float32{0.1, 0.2, 0.3, 0.4, 0.5}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("schema-12 rightward current consequences = %v, want %v", got, want)
+	}
+	if got, want := values[bombStart:bombStart+5], []float32{0.6, 0.7, 0.8, 0.9, 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("schema-12 leftward bomb consequences = %v, want %v", got, want)
+	}
+}
+
+func TestDirectionalRefugesUseSchemaThirteenScalarTail(t *testing.T) {
+	facts := battleengine.TacticalConsequences{}
+	facts.CurrentDirectionWholeCellRefugeFound[battleengine.DirectionRight] = true
+	facts.CurrentDirectionEarliestRefuge[battleengine.DirectionRight] = 0.2
+	facts.BombDirectionWholeCellRefugeFound[battleengine.DirectionLeft] = true
+	facts.BombDirectionEarliestRefuge[battleengine.DirectionLeft] = 0.75
+	values := make([]float32, ScalarFeatures)
+	setTacticalConsequenceFeatures(values, facts)
+
+	if values[162+int(battleengine.DirectionRight)] != 1 ||
+		values[167+int(battleengine.DirectionRight)] != 0.2 {
+		t.Fatalf("schema-13 current refuge tail = %v", values[162:172])
+	}
+	if values[172+int(battleengine.DirectionLeft)] != 1 ||
+		values[177+int(battleengine.DirectionLeft)] != 0.75 {
+		t.Fatalf("schema-13 bomb refuge tail = %v", values[172:182])
 	}
 }
 

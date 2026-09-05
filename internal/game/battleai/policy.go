@@ -14,14 +14,30 @@ type LogitRunner interface {
 	RunActor(spatial []float32, scalars []float32, legal []uint8) ([]float32, error)
 }
 
+// RecurrentLogitRunner advances caller-owned actor memory. Implementations
+// must not retain the slice: one shared inference session serves many rooms,
+// while each actor policy owns and commits only its returned state.
+type RecurrentLogitRunner interface {
+	RunActorRecurrent(
+		spatial []float32,
+		scalars []float32,
+		legal []uint8,
+		memory []float32,
+		reset bool,
+	) (logits []float32, nextMemory []float32, err error)
+}
+
 // NeuralCandidates adapts actor logits to battleengine.TopKSearchPolicy.
 type NeuralCandidates struct {
 	Contract        Contract
 	Runner          LogitRunner
 	DangerHorizonMS uint32
+	DecisionMS      uint32
+	memory          []float32
+	resetMemory     bool
 }
 
-func (policy NeuralCandidates) CandidateActions(
+func (policy *NeuralCandidates) CandidateActions(
 	_ battleengine.Observation,
 	_ []battleengine.Action,
 	_ int,
@@ -29,7 +45,7 @@ func (policy NeuralCandidates) CandidateActions(
 	return nil, fmt.Errorf("neural candidate policy requires an engine snapshot for danger features")
 }
 
-func (policy NeuralCandidates) CandidateActionsWithSnapshot(
+func (policy *NeuralCandidates) CandidateActionsWithSnapshot(
 	snapshot *battleengine.Engine,
 	observation battleengine.Observation,
 	legalActions []battleengine.Action,
@@ -53,13 +69,43 @@ func (policy NeuralCandidates) CandidateActionsWithSnapshot(
 	if err != nil {
 		return nil, err
 	}
-	encoded, err := battleenv.EncodeActor(
-		observation, danger, legalMask, policy.Contract.Height, policy.Contract.Width,
+	encoded, err := battleenv.EncodeActorAtDecision(
+		snapshot, observation, danger, legalMask, policy.Contract.Height, policy.Contract.Width,
+		policy.DecisionMS,
 	)
 	if err != nil {
 		return nil, err
 	}
-	logits, err := policy.Runner.RunActor(encoded.Spatial, encoded.ScalarValues, encoded.Legal)
+	var logits []float32
+	if policy.Contract.RecurrentHiddenSize > 0 {
+		runner, ok := policy.Runner.(RecurrentLogitRunner)
+		if !ok {
+			return nil, fmt.Errorf("AI contract requires recurrent inference but backend is stateless")
+		}
+		if len(policy.memory) == 0 {
+			policy.memory = make([]float32, policy.Contract.RecurrentHiddenSize)
+			policy.resetMemory = true
+		}
+		var nextMemory []float32
+		logits, nextMemory, err = runner.RunActorRecurrent(
+			encoded.Spatial, encoded.ScalarValues, encoded.Legal,
+			policy.memory, policy.resetMemory,
+		)
+		if err == nil {
+			if len(nextMemory) != policy.Contract.RecurrentHiddenSize {
+				return nil, fmt.Errorf(
+					"learned actor returned %d recurrent values, want %d",
+					len(nextMemory), policy.Contract.RecurrentHiddenSize,
+				)
+			}
+			copy(policy.memory, nextMemory)
+			policy.resetMemory = false
+		}
+	} else {
+		logits, err = policy.Runner.RunActor(
+			encoded.Spatial, encoded.ScalarValues, encoded.Legal,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("run learned actor: %w", err)
 	}

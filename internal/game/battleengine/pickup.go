@@ -131,7 +131,7 @@ func (engine *Engine) resolvePickupContacts() []Event {
 	events := make([]Event, 0)
 	for actorIndex := range engine.actors {
 		actor := &engine.actors[actorIndex]
-		if actor.State != ActorActive || !engine.actorCapabilities(actor, actor.Facing).CanCollectItems {
+		if actor.State != ActorActive || actor.nativePreviousPosition.Cell() == actor.Position.Cell() || !engine.actorCapabilities(actor, actor.Facing).CanCollectItems {
 			continue
 		}
 		// In a live mixed match, overlap is only an observation. The original
@@ -385,6 +385,10 @@ func (engine *Engine) retirePickupsAtCell(cell Cell) {
 }
 
 func (engine *Engine) installTransformation(actor *Actor, definition sceneelement.TransformationDefinition) {
+	// 005ad175 switches harm protection to the new avatar's own +18 flag,
+	// initialized to zero by 005b4d22. The embedded normal body's remaining
+	// protection is inactive; a later recovery installs a fresh normal timer.
+	actor.HarmProtectionExpiresAt = 0
 	if previous, ok := sceneelement.NativeTransformation(sceneelement.ID(actor.TransformationSceneID)); ok && previous.GrantedActionID != 0 {
 		removeHeldAction(actor, previous.GrantedActionID)
 	}

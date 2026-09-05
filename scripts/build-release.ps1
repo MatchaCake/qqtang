@@ -9,13 +9,12 @@ $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $workspace 'release'))
 $target = [IO.Path]::GetFullPath((Join-Path $releaseRoot $packageName))
 $baselineClient = [IO.Path]::GetFullPath((Join-Path $workspace 'client\original'))
-$buildAssets = [IO.Path]::GetFullPath((Join-Path $workspace 'build-assets'))
+if (-not (Test-Path -LiteralPath (Join-Path $baselineClient 'Client.exe') -PathType Leaf)) {
+	throw "Original client is missing. Read client\original\README.md and extract the supported client into $baselineClient"
+}
 $releasePrefix = $releaseRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 if (-not $target.StartsWith($releasePrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Release target escapes the workspace release directory: $target"
-}
-if (-not (Test-Path -LiteralPath (Join-Path $baselineClient 'Client.exe') -PathType Leaf)) {
-	throw "Original client is missing. Read client\original\README.md and extract the supported client into $baselineClient"
 }
 
 function Assert-LinuxServerBinary([string] $Path, [int] $ExpectedMachine, [string] $Architecture) {
@@ -101,10 +100,10 @@ if (-not (Test-Path -LiteralPath $ensureONNXRuntimeLinux -PathType Leaf)) {
 & $ensureONNXRuntimeLinux
 
 $required = @(
-	(Join-Path $buildAssets 'client-no-tp\Client.exe'),
-	(Join-Path $buildAssets 'client-no-tp\Client.tp-free.json'),
-	(Join-Path $buildAssets 'resource-cache\item-zips'),
-	(Join-Path $buildAssets 'resource-cache\pet-model-zips'),
+	(Join-Path $workspace 'build-assets\client-no-tp\Client.exe'),
+	(Join-Path $workspace 'build-assets\client-no-tp\Client.tp-free.json'),
+	(Join-Path $workspace 'build-assets\resource-cache\item-zips'),
+	(Join-Path $workspace 'build-assets\resource-cache\pet-model-zips'),
     (Join-Path $baselineClient 'Client.exe'),
     (Join-Path $workspace 'configs\server-directory-local-ui.json'),
     (Join-Path $workspace 'configs\adventure-rules.json'),
@@ -115,15 +114,14 @@ $required = @(
 	(Join-Path $workspace 'configs\item-resource-manifest-overrides.json'),
 	(Join-Path $workspace 'configs\item-resource-variant-preferences.json'),
     (Join-Path $workspace 'configs\network.json'),
-	(Join-Path $workspace 'configs\models\qqtang-rule1-selected-v2.qtai'),
-	(Join-Path $workspace 'configs\models\qqtang-rule1-selected-v2.onnx'),
-	(Join-Path $workspace 'configs\models\qqtang-rule1-selected-v2.onnx.json'),
-	(Join-Path $buildAssets 'onnxruntime\windows-amd64\onnxruntime.dll'),
-	(Join-Path $buildAssets 'onnxruntime\windows-amd64\onnxruntime_providers_shared.dll'),
-	(Join-Path $buildAssets 'onnxruntime\linux-amd64\libonnxruntime.so.1.29.0'),
-	(Join-Path $buildAssets 'onnxruntime\linux-amd64\libonnxruntime_providers_shared.so'),
-	(Join-Path $buildAssets 'onnxruntime\linux-arm64\libonnxruntime.so.1.29.0'),
-	(Join-Path $buildAssets 'onnxruntime\linux-arm64\libonnxruntime_providers_shared.so'),
+	(Join-Path $workspace 'configs\models\qqtang-rule1.onnx'),
+	(Join-Path $workspace 'configs\models\qqtang-rule1.onnx.json'),
+	(Join-Path $workspace 'build-assets\onnxruntime\windows-amd64\onnxruntime.dll'),
+	(Join-Path $workspace 'build-assets\onnxruntime\windows-amd64\onnxruntime_providers_shared.dll'),
+	(Join-Path $workspace 'build-assets\onnxruntime\linux-amd64\libonnxruntime.so.1.29.0'),
+	(Join-Path $workspace 'build-assets\onnxruntime\linux-amd64\libonnxruntime_providers_shared.so'),
+	(Join-Path $workspace 'build-assets\onnxruntime\linux-arm64\libonnxruntime.so.1.29.0'),
+	(Join-Path $workspace 'build-assets\onnxruntime\linux-arm64\libonnxruntime_providers_shared.so'),
 	(Join-Path $workspace 'data\qqt_combine_recipes.json'),
     (Join-Path $workspace 'configs\sso-message-trace-stable.json'),
     (Join-Path $workspace 'deploy\windows\README.txt'),
@@ -180,8 +178,8 @@ $sourcePlaceholder = Join-Path $targetClient 'README.md'
 if (Test-Path -LiteralPath $sourcePlaceholder -PathType Leaf) {
 	Remove-Item -LiteralPath $sourcePlaceholder -Force
 }
-Copy-Item -LiteralPath (Join-Path $buildAssets 'client-no-tp\Client.exe') -Destination (Join-Path $targetClient 'Client.exe') -Force
-Copy-Item -LiteralPath (Join-Path $buildAssets 'client-no-tp\Client.tp-free.json') -Destination (Join-Path $targetClient 'Client.tp-free.json') -Force
+Copy-Item -LiteralPath (Join-Path $workspace 'build-assets\client-no-tp\Client.exe') -Destination (Join-Path $targetClient 'Client.exe') -Force
+Copy-Item -LiteralPath (Join-Path $workspace 'build-assets\client-no-tp\Client.tp-free.json') -Destination (Join-Path $targetClient 'Client.tp-free.json') -Force
 Set-ReleaseClientFrameRate (Join-Path $targetClient 'config\GameCFG.ini') 144
 
 $networkSettings = Get-Content -Raw -LiteralPath (Join-Path $workspace 'configs\network.json') | ConvertFrom-Json
@@ -252,7 +250,7 @@ try {
 	$itemResourceDownloadLog = Join-Path $target 'runtime\patches\item-resource-download-results.json'
 	& $go.Source run ./cmd/qqt-item-resources `
 		-client-root $targetClient `
-		-cache-root (Join-Path $buildAssets 'resource-cache\item-zips') `
+		-cache-root (Join-Path $workspace 'build-assets\resource-cache\item-zips') `
 		-json $itemResourceIndex `
 		-report $itemResourceReport `
 		-download-log $itemResourceDownloadLog `
@@ -269,7 +267,7 @@ try {
 	$petResourceReport = Join-Path $target 'runtime\patches\pet-resource-restoration.json'
 	& $go.Source run ./cmd/qqt-pet-resources `
 		-client-root $targetClient `
-		-cache-root (Join-Path $buildAssets 'resource-cache\pet-model-zips') `
+		-cache-root (Join-Path $workspace 'build-assets\resource-cache\pet-model-zips') `
 		-json $petResourceReport `
 		-install
 	if ($LASTEXITCODE -ne 0) { throw "Official pet resource restoration exited with $LASTEXITCODE" }
@@ -288,9 +286,9 @@ try {
 	if ($LASTEXITCODE -ne 0) { throw "QQTSection static single-player Boss-card patch exited with $LASTEXITCODE" }
 	& $go.Source run ./cmd/qqt-static-solo-boss-card -check -client-root $targetClient
 	if ($LASTEXITCODE -ne 0) { throw "QQTSection static single-player Boss-card verification exited with $LASTEXITCODE" }
-	& $python.Source (Join-Path $workspace 'scripts\patch-python23-item-registry.py') --client-root $targetClient --xdis-root (Join-Path $buildAssets 'pytools')
+	& $python.Source (Join-Path $workspace 'scripts\patch-python23-item-registry.py') --client-root $targetClient --xdis-root (Join-Path $workspace 'build-assets\pytools')
 	if ($LASTEXITCODE -ne 0) { throw "Python 2.3 item-registry patch exited with $LASTEXITCODE" }
-	& $python.Source (Join-Path $workspace 'scripts\patch-python23-item-registry.py') --check --client-root $targetClient --xdis-root (Join-Path $buildAssets 'pytools')
+	& $python.Source (Join-Path $workspace 'scripts\patch-python23-item-registry.py') --check --client-root $targetClient --xdis-root (Join-Path $workspace 'build-assets\pytools')
 	if ($LASTEXITCODE -ne 0) { throw "Python 2.3 item-registry verification exited with $LASTEXITCODE" }
 	$soloBossPatchEvidence = Get-Content -Raw -LiteralPath $soloBossPatchReport | ConvertFrom-Json
 	$soloBossPatchEvidence.client_root = 'runtime/client-patched'
@@ -407,7 +405,8 @@ try {
 	$previousWindowsCC = $env:CC
 	try {
 		$env:CGO_ENABLED = '1'
-		$env:CC = $gcc.Source
+		# CGO parses CC as a command; preserve compiler paths containing spaces.
+		$env:CC = '"' + $gcc.Source + '"'
 		& $go.Source build -tags onnxruntime -trimpath -o (Join-Path $target 'runtime\bin\qqt-server-local.exe') ./cmd/qqt-server
 		if ($LASTEXITCODE -ne 0) { throw "qqt-server release build exited with $LASTEXITCODE" }
 	}
@@ -527,11 +526,11 @@ if ((Get-Content -LiteralPath $liveUpdateState -Raw) -notmatch 'state\s*=\s*[01]
 $baselinePrefix = $baselineClient.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 $targetClient = Join-Path $target 'runtime\client-patched'
 Get-ChildItem -LiteralPath $baselineClient -Recurse -Force -File | ForEach-Object {
-	$relativePath = $_.FullName.Substring($baselinePrefix.Length)
-	$topLevel = ($relativePath -split '[\\/]', 2)[0]
-	if ($topLevel -in @('TenioLog', 'Record')) { return }
-	if ($relativePath -eq 'README.md') { return }
-	if ($_.Name -in @('ClientBase.dll', 'TerSafe.dll', 'TenSLX.dll', 'TP3Helper.exe', 'TesSafe.sys')) { return }
+    $relativePath = $_.FullName.Substring($baselinePrefix.Length)
+    $topLevel = ($relativePath -split '[\\/]', 2)[0]
+    if ($topLevel -in @('TenioLog', 'Record')) { return }
+    if ($relativePath -eq 'README.md') { return }
+    if ($_.Name -in @('ClientBase.dll', 'TerSafe.dll', 'TenSLX.dll', 'TP3Helper.exe', 'TesSafe.sys')) { return }
     if ((
             $_.Extension -in @('.log', '.dmp', '.tmp', '.tem') -and
             $_.Name -ne 'QQTLiveUpdateLogFile.log'
@@ -676,20 +675,20 @@ foreach ($fileName in @('server-directory-local-ui.json', 'adventure-rules.json'
 foreach ($architecture in @('amd64', 'arm64')) {
 	$linuxServerConfig = Get-Content -Raw -LiteralPath (Join-Path $target 'configs\server-directory-local-ui.json') | ConvertFrom-Json
 	$linuxServerConfig.competitive_ai.backend = 'onnxruntime'
-	$linuxServerConfig.competitive_ai.model_path = 'models/qqtang-rule1-selected-v2.onnx'
-	$linuxServerConfig.competitive_ai.metadata_path = 'models/qqtang-rule1-selected-v2.onnx.json'
+	$linuxServerConfig.competitive_ai.model_path = 'models/qqtang-rule1.onnx'
+	$linuxServerConfig.competitive_ai | Add-Member -NotePropertyName metadata_path -NotePropertyValue 'models/qqtang-rule1.onnx.json' -Force
 	$linuxServerConfig.competitive_ai.shared_library_path = "../runtime/onnxruntime/linux-$architecture/libonnxruntime.so.1.29.0"
 	$linuxServerConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $target "configs\server-directory-local-ui-linux-$architecture.json") -Encoding utf8
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $target 'configs\models') | Out-Null
-Copy-Item -LiteralPath (Join-Path $workspace 'configs\models\qqtang-rule1-selected-v2.qtai') -Destination (Join-Path $target 'configs\models\qqtang-rule1-selected-v2.qtai') -Force
-Copy-Item -LiteralPath (Join-Path $workspace 'configs\models\qqtang-rule1-selected-v2.onnx') -Destination (Join-Path $target 'configs\models\qqtang-rule1-selected-v2.onnx') -Force
-Copy-Item -LiteralPath (Join-Path $workspace 'configs\models\qqtang-rule1-selected-v2.onnx.json') -Destination (Join-Path $target 'configs\models\qqtang-rule1-selected-v2.onnx.json') -Force
+Copy-Item -LiteralPath (Join-Path $workspace 'configs\models\qqtang-rule1.onnx') -Destination (Join-Path $target 'configs\models\qqtang-rule1.onnx') -Force
+Copy-Item -LiteralPath (Join-Path $workspace 'configs\models\qqtang-rule1.onnx.json') -Destination (Join-Path $target 'configs\models\qqtang-rule1.onnx.json') -Force
+Copy-Item -LiteralPath (Join-Path $workspace 'configs\models\README.md') -Destination (Join-Path $target 'configs\models\README.md') -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $target 'runtime\onnxruntime\windows-amd64') | Out-Null
-Copy-Item -LiteralPath (Join-Path $buildAssets 'onnxruntime\windows-amd64\onnxruntime.dll') -Destination (Join-Path $target 'runtime\onnxruntime\windows-amd64\onnxruntime.dll') -Force
-Copy-Item -LiteralPath (Join-Path $buildAssets 'onnxruntime\windows-amd64\onnxruntime_providers_shared.dll') -Destination (Join-Path $target 'runtime\onnxruntime\windows-amd64\onnxruntime_providers_shared.dll') -Force
+Copy-Item -LiteralPath (Join-Path $workspace 'build-assets\onnxruntime\windows-amd64\onnxruntime.dll') -Destination (Join-Path $target 'runtime\onnxruntime\windows-amd64\onnxruntime.dll') -Force
+Copy-Item -LiteralPath (Join-Path $workspace 'build-assets\onnxruntime\windows-amd64\onnxruntime_providers_shared.dll') -Destination (Join-Path $target 'runtime\onnxruntime\windows-amd64\onnxruntime_providers_shared.dll') -Force
 foreach ($architecture in @('amd64', 'arm64')) {
-	$linuxRuntimeSource = Join-Path $buildAssets "onnxruntime\linux-$architecture"
+	$linuxRuntimeSource = Join-Path $workspace "build-assets\onnxruntime\linux-$architecture"
 	$linuxRuntimeDestination = Join-Path $target "runtime\onnxruntime\linux-$architecture"
 	New-Item -ItemType Directory -Force -Path $linuxRuntimeDestination | Out-Null
 	Copy-Item -LiteralPath (Join-Path $linuxRuntimeSource 'libonnxruntime.so.1.29.0') -Destination (Join-Path $linuxRuntimeDestination 'libonnxruntime.so.1.29.0') -Force

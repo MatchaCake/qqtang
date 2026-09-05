@@ -8,13 +8,37 @@ import (
 	"math"
 	"sync"
 
+	"qqtang/internal/clientdata/sceneelement"
 	"qqtang/internal/game/battleengine"
 )
 
 const (
-	TensorSchemaVersion uint16 = 10
-	SpatialChannels            = 82
-	ScalarFeatures             = 84
+	// Schema 15 separates one-shot damage forecasts from visible flame residue.
+	// Shapes and physics are unchanged; danger/refuge values are corrected.
+	TensorSchemaVersion uint16 = 15
+	SpatialChannels            = 91
+	ScalarFeatures             = 182
+)
+
+const (
+	// Existing channels 20..25 preserve the coarse pickup categories learned
+	// by older policies. Schema 14 appends public, self-relative facts that the
+	// previous representation discarded: the native attribute amount, the
+	// amount that can still take effect before this actor's cap, and the exact
+	// fixed held-action identity. These are consequences, not item preferences.
+	pickupAttributeAmountChannel = 82
+	pickupEffectiveGainChannel   = 83
+	pickupActionChannelStart     = 84
+)
+
+const (
+	CurriculumOrdinary uint8 = iota
+	CurriculumDuel
+	CurriculumBlockade
+	CurriculumChainFinisher
+	CurriculumBombEscape
+	CurriculumDevelopment
+	CurriculumLateDuelReplay
 )
 
 // TensorBatch is a channel-first, fixed-shape actor input. Layout is
@@ -29,21 +53,31 @@ type TensorBatch struct {
 	// TeamIDs is episode metadata, not an actor input. It lets training group
 	// rewards and opponent policies without assuming equal or contiguous teams.
 	TeamIDs []uint8
-	Spatial []float32
-	Scalars []float32
-	Legal   []uint8
-	Active  []uint8
+	// TrainingTeamIDs is per-environment curriculum metadata, not an actor
+	// input. Zero leaves learner-team selection symmetric; a non-zero value
+	// binds the learner to the role that owns an asymmetric capability lesson.
+	TrainingTeamIDs []uint8
+	// CurriculumIDs identifies the authoritative environment setup used by
+	// each episode. It is learner-only task metadata and never enters the actor
+	// observation, so separating course gradients cannot constrain exploration.
+	CurriculumIDs []uint8
+	Spatial       []float32
+	Scalars       []float32
+	Legal         []uint8
+	Active        []uint8
 }
 
 func newTensorBatch(envCount, participants, height, width int) TensorBatch {
 	return TensorBatch{
 		SchemaVersion: TensorSchemaVersion,
 		EnvCount:      envCount, ParticipantCount: participants, Height: height, Width: width,
-		TeamIDs: make([]uint8, envCount*participants),
-		Spatial: make([]float32, envCount*participants*SpatialChannels*height*width),
-		Scalars: make([]float32, envCount*participants*ScalarFeatures),
-		Legal:   make([]uint8, envCount*participants*int(battleengine.DiscreteActionCount)),
-		Active:  make([]uint8, envCount*participants),
+		TeamIDs:         make([]uint8, envCount*participants),
+		TrainingTeamIDs: make([]uint8, envCount),
+		CurriculumIDs:   make([]uint8, envCount),
+		Spatial:         make([]float32, envCount*participants*SpatialChannels*height*width),
+		Scalars:         make([]float32, envCount*participants*ScalarFeatures),
+		Legal:           make([]uint8, envCount*participants*int(battleengine.DiscreteActionCount)),
+		Active:          make([]uint8, envCount*participants),
 	}
 }
 
@@ -52,13 +86,15 @@ func clearTensorBatch(tensors *TensorBatch) {
 		return
 	}
 	clear(tensors.TeamIDs)
+	clear(tensors.TrainingTeamIDs)
+	clear(tensors.CurriculumIDs)
 	clear(tensors.Spatial)
 	clear(tensors.Scalars)
 	clear(tensors.Legal)
 	clear(tensors.Active)
 }
 
-func encodeActor(tensors *TensorBatch, envIndex, actorIndex int, observation battleengine.Observation, danger battleengine.DangerTimeline, legal battleengine.ActionMask) error {
+func encodeActor(tensors *TensorBatch, envIndex, actorIndex int, observation battleengine.Observation, danger battleengine.DangerTimeline, consequences battleengine.TacticalConsequences, legal battleengine.ActionMask) error {
 	if tensors == nil {
 		return fmt.Errorf("tensor batch is nil")
 	}
@@ -307,12 +343,14 @@ func encodeActor(tensors *TensorBatch, envIndex, actorIndex int, observation bat
 	}
 	for _, pickup := range observation.Pickups {
 		set(pickupChannel(pickup.SceneID), pickup.Cell, 1)
+		setVisiblePickupFacts(set, pickup, self)
 	}
 
 	scalarBase := ((envIndex * tensors.ParticipantCount) + actorIndex) * ScalarFeatures
 	scalars := tensors.Scalars[scalarBase : scalarBase+ScalarFeatures]
 	setScalarFeatures(scalars, observation, self)
 	setVisibleTacticalRouteFeatures(scalars, observation, self)
+	setTacticalConsequenceFeatures(scalars, consequences)
 	legalBase := ((envIndex * tensors.ParticipantCount) + actorIndex) * int(battleengine.DiscreteActionCount)
 	for id, allowed := range legal {
 		if allowed {
@@ -323,6 +361,116 @@ func encodeActor(tensors *TensorBatch, envIndex, actorIndex int, observation bat
 		tensors.Active[envIndex*tensors.ParticipantCount+actorIndex] = 1
 	}
 	return nil
+}
+
+func setVisiblePickupFacts(
+	set func(channel int, cell battleengine.Cell, value float32),
+	pickup battleengine.Pickup,
+	self battleengine.ActorObservation,
+) {
+	var current, maximum, amount byte
+	switch pickup.SceneID {
+	case battleengine.SceneBombCapacitySmall:
+		current, maximum, amount = self.BombCapacity, self.MaxBombCapacity, 1
+	case battleengine.SceneBombCapacityLarge:
+		current, maximum, amount = self.BombCapacity, self.MaxBombCapacity, 8
+	case battleengine.SceneBombPowerSmall:
+		current, maximum, amount = self.BombPower, self.MaxBombPower, 1
+	case battleengine.SceneBombPowerLarge:
+		current, maximum, amount = self.BombPower, self.MaxBombPower, 8
+	case battleengine.SceneSpeedSmall:
+		current, maximum, amount = self.SpeedRate, self.MaxSpeedRate, 1
+	case battleengine.SceneSpeedLarge:
+		current, maximum, amount = self.SpeedRate, self.MaxSpeedRate, 8
+	}
+	if amount != 0 {
+		set(pickupAttributeAmountChannel, pickup.Cell, float32(amount)/8)
+		gain := byte(0)
+		if maximum > current {
+			gain = maximum - current
+			if gain > amount {
+				gain = amount
+			}
+		}
+		set(pickupEffectiveGainChannel, pickup.Cell, float32(gain)/8)
+	}
+
+	action, ok := sceneelement.NativeBattleActionPickup(sceneelement.ID(pickup.SceneID))
+	if !ok {
+		return
+	}
+	for index := 0; index < battleengine.NativeBattleActionSlots; index++ {
+		actionID, known := battleengine.NativeUseActionIDAt(index)
+		if known && action.ActionID == actionID {
+			set(pickupActionChannelStart+index, pickup.Cell, 1)
+			return
+		}
+	}
+}
+
+// setTacticalConsequenceFeatures appends conservative known-danger
+// reachability and place-bomb counterfactuals. They describe evidence, not
+// preferences or guaranteed future safety: the learned policy remains
+// responsible for exploration and for trading self risk, pressure, wall
+// value, chain value and teammate risk.
+func setTacticalConsequenceFeatures(values []float32, facts battleengine.TacticalConsequences) {
+	if len(values) != ScalarFeatures {
+		panic("invalid scalar feature storage")
+	}
+	copy(values[84:89], facts.CurrentKnownDangerReachable[:])
+	copy(values[89:94], facts.BombKnownDangerReachable[:])
+	if facts.BombLegal {
+		values[94] = 1
+	}
+	if facts.BombKnownDangerProjectionValid {
+		values[95] = 1
+	}
+	values[96] = clamp01(facts.BombEarliestWholeCellRefugeEstimate)
+	copy(values[97:100], facts.EnemyCurrentKnownReachable[:])
+	copy(values[100:103], facts.EnemyBombKnownReachable[:])
+	copy(values[103:106], facts.EnemyKnownReachReduction[:])
+	values[106] = clamp01(facts.AllyKnownReachReduction)
+	values[107] = clamp01(facts.NewEnemyThreatRatio)
+	values[108] = clamp01(facts.NewAllyThreatRatio)
+	values[109] = clamp01(facts.NewBreakableThreatRatio)
+	values[110] = clamp01(facts.AcceleratedChainRatio)
+	if facts.KnownDangerProjectionValid {
+		values[111] = 1
+	}
+	currentDirectionBase := 112
+	bombDirectionBase := currentDirectionBase +
+		battleengine.TacticalMovementCandidateCount*battleengine.TacticalReachabilityHorizonCount
+	for direction := 0; direction < battleengine.TacticalMovementCandidateCount; direction++ {
+		currentStart := currentDirectionBase + direction*battleengine.TacticalReachabilityHorizonCount
+		bombStart := bombDirectionBase + direction*battleengine.TacticalReachabilityHorizonCount
+		copy(
+			values[currentStart:currentStart+battleengine.TacticalReachabilityHorizonCount],
+			facts.CurrentDirectionKnownDangerReachable[direction][:],
+		)
+		copy(
+			values[bombStart:bombStart+battleengine.TacticalReachabilityHorizonCount],
+			facts.BombDirectionKnownDangerReachable[direction][:],
+		)
+	}
+	currentRefugeFoundBase := bombDirectionBase +
+		battleengine.TacticalMovementCandidateCount*battleengine.TacticalReachabilityHorizonCount
+	currentRefugeTimeBase := currentRefugeFoundBase + battleengine.TacticalMovementCandidateCount
+	bombRefugeFoundBase := currentRefugeTimeBase + battleengine.TacticalMovementCandidateCount
+	bombRefugeTimeBase := bombRefugeFoundBase + battleengine.TacticalMovementCandidateCount
+	for direction := 0; direction < battleengine.TacticalMovementCandidateCount; direction++ {
+		if facts.CurrentDirectionWholeCellRefugeFound[direction] {
+			values[currentRefugeFoundBase+direction] = 1
+		}
+		values[currentRefugeTimeBase+direction] = clamp01(
+			facts.CurrentDirectionEarliestRefuge[direction],
+		)
+		if facts.BombDirectionWholeCellRefugeFound[direction] {
+			values[bombRefugeFoundBase+direction] = 1
+		}
+		values[bombRefugeTimeBase+direction] = clamp01(
+			facts.BombDirectionEarliestRefuge[direction],
+		)
+	}
 }
 
 func transformationChannel(sceneID uint32) (int, bool) {

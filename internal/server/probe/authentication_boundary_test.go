@@ -9,6 +9,31 @@ import (
 	"qqtang/internal/protocol/game"
 )
 
+func TestLoginUtilityCommandsCannotBypassBusinessAuthentication(t *testing.T) {
+	for _, auxiliary := range []bool{false, true} {
+		name := "foreign-envelope"
+		packetUIN := uint32(1000002)
+		if auxiliary {
+			name = "shop-auxiliary"
+			packetUIN = 1000001
+		}
+		t.Run(name, func(t *testing.T) {
+			payload := make([]byte, 9)
+			binary.BigEndian.PutUint32(payload, packetUIN)
+			packet := testLocalRoutedPacketWithPayload(t, game.LogoutCommand, 2, 0xffff, 1, packetUIN, payload)
+			server := &Server{logWriter: io.Discard, authenticationState: newAuthenticationState()}
+			session := &connectionSession{UIN: 1000001, Profile: game.DefaultPlayerProfile(), auxiliary: auxiliary}
+			if !auxiliary {
+				session.liveUIN.Store(session.UIN)
+			}
+			outcome := server.dispatchTCPMessage(ListenerConfig{Response: ResponseConfig{QQTLoginSuccess: true, QQTShopType2Session: auxiliary}}, session, "utility-auth", "local", "127.0.0.1:40000", packet)
+			if outcome.keepConnection || len(outcome.response) != 0 || session.UIN != 1000001 {
+				t.Fatalf("logout utility bypassed authentication: keep=%t response=%d sessionUIN=%d", outcome.keepConnection, len(outcome.response), session.UIN)
+			}
+		})
+	}
+}
+
 func TestUnauthenticatedConnectionCannotCreateRoom(t *testing.T) {
 	const forgedUIN uint32 = 1_000_001
 	payload := make([]byte, 50)

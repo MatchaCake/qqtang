@@ -161,10 +161,7 @@ func planCompetitiveAIFill(snapshot roomstate.Snapshot, selectedMap mapdata.Comp
 		usedPlayerIDs[nextPlayerID] = struct{}{}
 		nextPlayerID++
 	}
-	spawnMode := battleengine.NativeSpawnTeams
-	if snapshot.Properties.UsesFreeRule() {
-		spawnMode = battleengine.NativeSpawnFree
-	}
+	spawnMode := battleengine.NativeSpawnModeForMap(selectedMap, snapshot.Properties.UsesFreeRule())
 	allTeamIDs := make([]byte, 0, len(humans)+len(plan.Participants))
 	for _, human := range humans {
 		allTeamIDs = append(allTeamIDs, human.TeamID)

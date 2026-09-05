@@ -126,7 +126,7 @@ func (server *Server) scheduleCompetitiveAirborne(schedule competitiveAirborneSc
 		Level: "info", Event: "competitive_airborne_scheduled", RoomID: fmt.Sprint(schedule.RoomID),
 		Result: fmt.Sprintf("game_%d_map_%d_boss_%s_cells_%d", schedule.GameID, schedule.MapID, schedule.BossID, len(schedule.Cells)),
 	})
-	go func() {
+	server.runBackground(func() {
 		started := time.Now()
 		timer := time.NewTimer(competitiveAirborneInitialDelay)
 		defer timer.Stop()
@@ -174,5 +174,5 @@ func (server *Server) scheduleCompetitiveAirborne(schedule competitiveAirborneSc
 				return
 			}
 		}
-	}()
+	})
 }

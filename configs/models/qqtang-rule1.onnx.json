@@ -1,0 +1,22 @@
+{
+  "format": "qqtang-decentralized-actor-onnx",
+  "contract_version": 2,
+  "model_architecture_version": 2,
+  "model_variant": "routed-multiplayer-context-tactical-recurrent-backbone-factorized-candidate-v4",
+  "tensor_version": 15,
+  "channels": 91,
+  "scalars": 182,
+  "actions": 45,
+  "height": 13,
+  "width": 15,
+  "batch_dynamic": true,
+  "recurrent_hidden_size": 256,
+  "recurrent_reset": "match_or_episode_start",
+  "checkpoint": "checkpoints-async/v253u128-native-team-value-outcome-v255/update-000032.pt",
+  "checkpoint_tensor_migrated": true,
+  "onnx_sha256": "e8c8f5114aef834b2f99c4bb4c5de1571c347f8b289a369b572e6363e03dd7c3",
+  "maximum_parity_error": 1.9073486328125e-06,
+  "mean_parity_error": 5.569951326833689e-07,
+  "checkpoint_label": "V255-U32",
+  "checkpoint_sha256": "fd47fb4dd6fe21ff3a64bfe327cded1759efb7b4e58253bccd3579d10e6dcd1f"
+}

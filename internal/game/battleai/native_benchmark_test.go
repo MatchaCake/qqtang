@@ -38,8 +38,8 @@ func BenchmarkNativeDeploymentModels(b *testing.B) {
 		path string
 	}{
 		{
-			name: "selected-realtime",
-			path: filepath.Join("..", "..", "..", "configs", "models", "qqtang-rule1-selected-v2.qtai"),
+			name: "legacy-native",
+			path: filepath.Join("..", "..", "..", "runtime", "model-backups", "qqtang-rule1-selected-v2.qtai"),
 		},
 		{
 			name: "v8-context-champion",
@@ -83,8 +83,8 @@ func BenchmarkNativeFullRoomConcurrent(b *testing.B) {
 		path string
 	}{
 		{
-			name: "selected-realtime",
-			path: filepath.Join("..", "..", "..", "configs", "models", "qqtang-rule1-selected-v2.qtai"),
+			name: "legacy-native",
+			path: filepath.Join("..", "..", "..", "runtime", "model-backups", "qqtang-rule1-selected-v2.qtai"),
 		},
 		{
 			name: "v8-context-champion",

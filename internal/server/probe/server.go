@@ -1,7 +1,6 @@
 package probe
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -423,6 +422,7 @@ func New(config Config) (*Server, error) {
 			InterOpThreads:    config.CompetitiveAI.InterOpThreads,
 			NativePolicyConfig: battleai.NativePolicyConfig{
 				DangerHorizonMS: 3_500,
+				DecisionMS:      config.CompetitiveAI.TickMS,
 				EnableSearch:    config.CompetitiveAI.SearchEnabled,
 				Search: battleengine.SearchConfig{
 					TopK: 4, HorizonMS: battleengine.NativeBombFuseMS + 200, DangerHorizonMS: 3_500,
@@ -752,6 +752,11 @@ func (server *Server) serveTCP(ctx context.Context, listener net.Listener, confi
 func (server *Server) handleTCP(ctx context.Context, connection net.Conn, config ListenerConfig, id string) {
 	defer connection.Close()
 	local, remote := connection.LocalAddr().String(), connection.RemoteAddr().String()
+	session := &connectionSession{Profile: server.config.seedPlayerProfile(), done: make(chan struct{})}
+	if !server.registerLiveSession(session, connection, id, local, remote) {
+		return
+	}
+	defer server.unregisterLiveSession(connection)
 	server.log(logEvent{Level: "info", Event: "connection_opened", ConnectionID: id, Network: "tcp", LocalAddress: local, RemoteAddress: remote, Result: config.Name})
 	defer server.log(logEvent{Level: "info", Event: "connection_closed", ConnectionID: id, Network: "tcp", LocalAddress: local, RemoteAddress: remote, Result: config.Name})
 	if config.Response.OnConnectHex != "" {
@@ -762,8 +767,6 @@ func (server *Server) handleTCP(ctx context.Context, connection net.Conn, config
 	}
 	buffer := make([]byte, server.config.MaxPacketSize)
 	var pending []byte
-	session := &connectionSession{Profile: server.config.seedPlayerProfile(), done: make(chan struct{})}
-	server.registerLiveSession(session, connection, id, local, remote)
 	defer func() {
 		close(session.done)
 		depart := func() error {
@@ -789,7 +792,6 @@ func (server *Server) handleTCP(ctx context.Context, connection net.Conn, config
 		if departureErr != nil {
 			server.log(logEvent{Level: "error", Event: "room_actor_command_failed", ConnectionID: id, RoomID: fmt.Sprint(roomID), Result: "tcp_connection_departure", ErrorContext: departureErr.Error()})
 		}
-		server.unregisterLiveSession(connection)
 	}()
 	for {
 		if err := connection.SetReadDeadline(time.Now().Add(server.config.idleTimeout())); err != nil {
@@ -1448,8 +1450,19 @@ func adventureWallItemsToWire(stage mapdata.AdventureStageRule, itemSeed uint32)
 	return items, nil
 }
 
-func adventureNextMapTargetMatches(wireTarget, nextMapID uint32, hasNext bool) bool {
-	return wireTarget == game.UnspecifiedNextMapIDWire || (hasNext && wireTarget == nextMapID)
+func adventureNextMapTargetMatches(wireTarget, currentMapID, nextMapID uint32, hasNext bool) bool {
+	if wireTarget == game.UnspecifiedNextMapIDWire {
+		return true
+	}
+	if !hasNext {
+		return false
+	}
+	// Some native battlefield files emit the nominal sequential ID even when
+	// Continue.ini skips an uninstalled stage. 守望山麓 is the observed case:
+	// map 1646 requests 1647, while the authoritative installed route continues
+	// at 1648. The outgoing notification still carries nextMapID from the
+	// catalog; accept only this immediate placeholder, not arbitrary targets.
+	return wireTarget == nextMapID || wireTarget == currentMapID+1
 }
 
 func (server *Server) newAdventureGameData(session *connectionSession, stageGameID uint32, selectedMap mapdata.AdventureMap, arbitratorID uint16, participants []match.AdventureParticipant) (game.GameBeginData, error) {
@@ -1755,7 +1768,7 @@ func (server *Server) log(event logEvent) {
 	event.Time = time.Now().UTC()
 	server.logMu.Lock()
 	defer server.logMu.Unlock()
-	writer := bufio.NewWriter(server.logWriter)
-	_ = json.NewEncoder(writer).Encode(event)
-	_ = writer.Flush()
+	// Encoder already writes one complete JSON record. A new 4 KiB buffered
+	// writer flushed on every line adds an allocation without batching any IO.
+	_ = json.NewEncoder(server.logWriter).Encode(event)
 }

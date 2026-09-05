@@ -53,8 +53,9 @@ type Config struct {
 // CompetitiveAIConfig gates the experimental live rule-1 virtual-player
 // adapter. Disabled is the zero value and preserves every existing room.
 // ModelPath points to the actor artifact selected by Backend. ONNX Runtime
-// additionally requires the exported metadata sidecar and shared library;
-// every path is resolved relative to the server config file.
+// reads the exported metadata sidecar next to the model and additionally
+// requires the shared library; every path is resolved relative to the server
+// config file.
 type CompetitiveAIConfig struct {
 	Enabled           bool   `json:"enabled,omitempty"`
 	Backend           string `json:"backend,omitempty"`
@@ -268,12 +269,13 @@ func LoadConfig(path string) (Config, error) {
 		config.CompetitiveAI.ModelPath = resolveAIPath(config.CompetitiveAI.ModelPath)
 		if config.CompetitiveAI.Backend == "onnxruntime" {
 			if strings.TrimSpace(config.CompetitiveAI.MetadataPath) == "" {
-				return Config{}, fmt.Errorf("competitive_ai.metadata_path is required for ONNX Runtime")
+				config.CompetitiveAI.MetadataPath = config.CompetitiveAI.ModelPath + ".json"
+			} else {
+				config.CompetitiveAI.MetadataPath = resolveAIPath(config.CompetitiveAI.MetadataPath)
 			}
 			if strings.TrimSpace(config.CompetitiveAI.SharedLibraryPath) == "" {
 				return Config{}, fmt.Errorf("competitive_ai.shared_library_path is required for ONNX Runtime")
 			}
-			config.CompetitiveAI.MetadataPath = resolveAIPath(config.CompetitiveAI.MetadataPath)
 			config.CompetitiveAI.SharedLibraryPath = resolveAIPath(config.CompetitiveAI.SharedLibraryPath)
 		}
 		if config.CompetitiveAI.IntraOpThreads < 0 || config.CompetitiveAI.InterOpThreads < 0 {
@@ -697,9 +699,10 @@ func (config Config) seedPlayerProfile() game.PlayerProfile {
 }
 
 // playerProfileForUIN keeps the configured seed account byte-for-byte stable
-// while assigning newly created local accounts distinct protocol PlayerIDs.
+// while proposing protocol PlayerIDs for newly created local accounts.
 // The legacy room and battle messages address players by uint16 PlayerID, so
 // two SQLite rows that both inherit PlayerID 1 cannot participate in one room.
+// Persistence resolves collisions in this modulo preference transactionally.
 func (config Config) playerProfileForUIN(uin uint32) game.PlayerProfile {
 	profile := config.seedPlayerProfile()
 	if uin != 0 && config.SeedUIN != 0 && uin != config.SeedUIN {

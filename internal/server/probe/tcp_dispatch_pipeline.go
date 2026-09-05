@@ -133,6 +133,7 @@ func (server *Server) dispatchTCPMessage(config ListenerConfig, session *connect
 	if !server.authorizeBusinessDispatch(config, session, connectionID, data, &outcome) {
 		return outcome
 	}
+	server.dispatchLoginUtilityStage(config, session, connectionID, data, &outcome)
 	server.dispatchChatStage(config, session, connectionID, data, &outcome)
 	server.dispatchFriendStage(config, session, connectionID, data, &outcome)
 	server.dispatchKinStage(config, session, connectionID, data, &outcome)
@@ -295,6 +296,18 @@ func (server *Server) dispatchLoginStages(config ListenerConfig, session *connec
 		outcome.handledWithoutResponse = len(login.response) == 0
 	}
 	if !outcome.available() {
+		return
+	}
+	// The native config-version probe precedes REQUEST_LOGIN and has no
+	// account effects. Logout, pets, crafting and item use are business
+	// operations and must pass the common authenticated-envelope boundary.
+	if _, err := game.DecodeLocalConfigFileRequest(data); err == nil {
+		server.dispatchLoginUtilityStage(config, session, connectionID, data, outcome)
+	}
+}
+
+func (server *Server) dispatchLoginUtilityStage(config ListenerConfig, session *connectionSession, connectionID string, data []byte, outcome *tcpDispatchOutcome) {
+	if !config.Response.QQTLoginSuccess || !outcome.available() {
 		return
 	}
 	utility := server.handleLoginUtilityMessage(session, connectionID, data)

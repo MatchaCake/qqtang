@@ -82,6 +82,24 @@ func TestPlanCompetitiveAIFillStandardBuildsThreeVersusThree(t *testing.T) {
 	}
 }
 
+func TestPlanCompetitiveAIFillStandardUsesLegacySingleSpawnPool(t *testing.T) {
+	entry := testCompetitiveAIMap(6)
+	entry.SpawnGroupA = append(entry.SpawnGroupA, entry.SpawnGroupB[:2]...)
+	entry.SpawnGroupB = nil
+	humans := []match.CompetitiveParticipant{
+		{PlayerID: 1, RoleID: 7, TeamID: 4},
+		{PlayerID: 2, RoleID: 8, TeamID: 4},
+		{PlayerID: 3, RoleID: 9, TeamID: 4},
+	}
+	plan, err := planCompetitiveAIFill(testCompetitiveAISnapshot(false, 6), entry, humans, 117)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Participants) != 3 {
+		t.Fatalf("single-pool standard 3v3 fill count = %d, want 3", len(plan.Participants))
+	}
+}
+
 func TestPlanCompetitiveAIFillStandardNeverPartiallyFillsAnOpponentTeam(t *testing.T) {
 	entry := testCompetitiveAIMap(3)
 	snapshot := testCompetitiveAISnapshot(false, 3)

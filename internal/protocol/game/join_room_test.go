@@ -59,3 +59,23 @@ func TestJoinRoomRequestAndResponse(t *testing.T) {
 		t.Fatalf("join-room response command 0x%04X payload %X", inspection.Command, inspection.Payload[:6])
 	}
 }
+
+func TestBuildLocalJoinRoomUnavailableFailure(t *testing.T) {
+	packet, err := BuildLocalJoinRoomFailure(testJoinRoomPacket(t), EnterRoomResultRoomUnavailable, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := InspectLocalPacket(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Command != JoinRoomCommand || len(inspection.Payload) != joinRoomFailureSize {
+		t.Fatalf("join-room failure = command 0x%04X payload %d", inspection.Command, len(inspection.Payload))
+	}
+	if got := EnterRoomResultID(binary.BigEndian.Uint16(inspection.Payload[0:2])); got != EnterRoomResultRoomUnavailable {
+		t.Fatalf("join-room failure result = %d", got)
+	}
+	if got := binary.BigEndian.Uint16(inspection.Payload[2:4]); got != 0 {
+		t.Fatalf("join-room unavailable room ID = %d, want 0", got)
+	}
+}

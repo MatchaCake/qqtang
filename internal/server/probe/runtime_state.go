@@ -36,6 +36,36 @@ func newServerLifecycle() serverLifecycle {
 	}
 }
 
+// runBackground registers resource users before shutdown can begin waiting.
+// Accepted work must finish before Close releases capture, logging and stores.
+func (server *Server) runBackground(run func()) bool {
+	server.mu.Lock()
+	if server.closed {
+		server.mu.Unlock()
+		return false
+	}
+	server.wg.Add(1)
+	server.mu.Unlock()
+	go func() {
+		defer server.wg.Done()
+		run()
+	}()
+	return true
+}
+
+func (server *Server) runAfter(delay time.Duration, run func()) {
+	server.runBackground(func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-server.done:
+			return
+		case <-timer.C:
+			run()
+		}
+	})
+}
+
 // authenticationState owns every host-bound login capability and its mutex.
 // It is intentionally separate from live game sessions: district navigation
 // is authenticated account state, not online world membership.

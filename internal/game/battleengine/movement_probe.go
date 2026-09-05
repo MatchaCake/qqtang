@@ -101,14 +101,8 @@ func ResolveNativeMovementProbe(probe NativeMovementProbe) (NativeMovementProbeR
 	if distance == 0 {
 		return nativeMovementProbeResult(actor, false), nil
 	}
-	dx, dy, _ := probe.Direction.delta()
 	start := actor.Position
-	candidate := Position{X: actor.Position.X + dx*int32(distance), Y: actor.Position.Y + dy*int32(distance)}
-	if engine.positionWalkable(actor, candidate, probe.Direction) {
-		actor.Position = candidate
-	} else {
-		engine.applyNativeCornerCorrection(actor, candidate, probe.Direction, distance)
-	}
+	engine.resolveNativeMovementDisplacement(actor, probe.Direction, distance, true)
 	return nativeMovementProbeResult(actor, actor.Position != start), nil
 }
 

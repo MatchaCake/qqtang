@@ -87,25 +87,45 @@ var nativeRoutedMultiplayerContextRoleTensorOrder = append(
 	nativeMultiplayerRoleTensorOrder...,
 )
 
+var nativeRoutedMultiplayerContextTacticalTensorOrder = append(
+	append([]string(nil), nativeRoutedMultiplayerContextTensorOrder...),
+	"tactical_residual.weight", "tactical_residual.bias",
+	"tactical_gate.weight", "tactical_gate.bias",
+)
+
+var nativeRoutedMultiplayerContextTacticalStackTensorOrder = append(
+	append([]string(nil), nativeRoutedMultiplayerContextTacticalTensorOrder...),
+	"finisher_residual.weight", "finisher_residual.bias",
+	"finisher_gate.weight", "finisher_gate.bias",
+)
+
 var nativeRoutedMultiplayerRoleTensorOrder = append(
 	append([]string(nil), nativeRoutedMultiplayerTensorOrder...),
 	nativeMultiplayerRoleTensorOrder...,
 )
 
 func nativeVariantPreservesTopology(variantID uint16) bool {
-	return variantID >= 3 && variantID <= 9
+	return variantID >= 3 && variantID <= 11
 }
 
 func nativeVariantRouted(variantID uint16) bool {
-	return variantID >= 4 && variantID <= 9
+	return variantID >= 4 && variantID <= 11
 }
 
 func nativeVariantMultiplayer(variantID uint16) bool {
-	return variantID >= 5 && variantID <= 9
+	return variantID >= 5 && variantID <= 11
 }
 
 func nativeVariantContext(variantID uint16) bool {
-	return variantID == 7 || variantID == 8
+	return variantID == 7 || variantID == 8 || variantID == 10 || variantID == 11
+}
+
+func nativeVariantTactical(variantID uint16) bool {
+	return variantID == 10 || variantID == 11
+}
+
+func nativeVariantFinisher(variantID uint16) bool {
+	return variantID == 11
 }
 
 func nativeVariantRoles(variantID uint16) bool {
@@ -128,6 +148,10 @@ func nativeTensorOrderForVariant(variantID uint16) ([]string, bool) {
 		return nativeRoutedMultiplayerContextRoleTensorOrder, true
 	case 9:
 		return nativeRoutedMultiplayerRoleTensorOrder, true
+	case 10:
+		return nativeRoutedMultiplayerContextTacticalTensorOrder, true
+	case 11:
+		return nativeRoutedMultiplayerContextTacticalStackTensorOrder, true
 	default:
 		return nil, false
 	}
@@ -215,6 +239,10 @@ func (runner *NativeRunner) Contract() Contract {
 		variant = "routed-multiplayer-context-roles-v1"
 	case 9:
 		variant = "routed-multiplayer-roles-v1"
+	case 10:
+		variant = "routed-multiplayer-context-tactical-v1"
+	case 11:
+		variant = "routed-multiplayer-context-tactical-stack-v1"
 	}
 	return Contract{
 		Format: NativeActorFormat, ContractVersion: nativeActorVersion,
@@ -454,6 +482,22 @@ func (runner *NativeRunner) validateShapes() error {
 					!equal(shape(prefix+".bias"), runner.Actions) {
 					return fmt.Errorf("native AI multiplayer role %d shapes are inconsistent", role)
 				}
+			}
+		}
+		if nativeVariantTactical(runner.VariantID) {
+			if !equal(shape("tactical_residual.weight"), runner.Actions, hidden) ||
+				!equal(shape("tactical_residual.bias"), runner.Actions) ||
+				!equal(shape("tactical_gate.weight"), 1, hidden) ||
+				!equal(shape("tactical_gate.bias"), 1) {
+				return fmt.Errorf("native AI tactical adapter shapes are inconsistent")
+			}
+		}
+		if nativeVariantFinisher(runner.VariantID) {
+			if !equal(shape("finisher_residual.weight"), runner.Actions, hidden) ||
+				!equal(shape("finisher_residual.bias"), runner.Actions) ||
+				!equal(shape("finisher_gate.weight"), 1, hidden) ||
+				!equal(shape("finisher_gate.bias"), 1) {
+				return fmt.Errorf("native AI finisher adapter shapes are inconsistent")
 			}
 		}
 	}
@@ -765,6 +809,22 @@ func (runner *NativeRunner) runDenseActor(
 		)
 		for action := range logits {
 			logits[action] += multiplayerGate * residual[action]
+		}
+	}
+	if nativeVariantTactical(runner.VariantID) {
+		gateLogit := runner.linear(hidden, "tactical_gate")[0]
+		gate := float32(1 / (1 + math.Exp(float64(-gateLogit))))
+		residual := runner.linear(hidden, "tactical_residual")
+		for action := range logits {
+			logits[action] += gate * residual[action]
+		}
+	}
+	if nativeVariantFinisher(runner.VariantID) {
+		gateLogit := runner.linear(hidden, "finisher_gate")[0]
+		gate := float32(1 / (1 + math.Exp(float64(-gateLogit))))
+		residual := runner.linear(hidden, "finisher_residual")
+		for action := range logits {
+			logits[action] += gate * residual[action]
 		}
 	}
 	for index := range logits {

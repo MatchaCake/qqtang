@@ -128,7 +128,7 @@ type TransformationDefinition struct {
 }
 
 // BattleActionPickupDefinition describes an ordinary-map scene pickup whose
-// native collision callback adds an item to one of the player's six in-match
+// native collision callback adds an item to one of the player's seven in-match
 // action slots. ActionID belongs to the battlefield action namespace, not to
 // the account inventory catalog.
 type BattleActionPickupDefinition struct {

@@ -107,7 +107,7 @@ func inventoryItemByID(inventory []game.ItemInfo, itemID uint16) (game.ItemInfo,
 }
 
 func (server *Server) schedulePurchasedItemRefresh(uin, commodityID uint32, item game.ItemInfo) {
-	time.AfterFunc(100*time.Millisecond, func() {
+	server.runAfter(100*time.Millisecond, func() {
 		server.sendPrimaryInventoryItemRefresh(uin, commodityID, item)
 	})
 }
@@ -117,7 +117,7 @@ func (server *Server) scheduleInventoryStatusRefresh(uin uint32, items []game.It
 		return
 	}
 	absolute := append([]game.ItemInfo(nil), items...)
-	time.AfterFunc(100*time.Millisecond, func() {
+	server.runAfter(100*time.Millisecond, func() {
 		server.sendPrimaryInventoryItemsRefresh(uin, 0, absolute)
 	})
 }

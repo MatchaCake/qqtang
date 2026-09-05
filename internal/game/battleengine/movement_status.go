@@ -30,7 +30,7 @@ func (engine *Engine) expireMovementStatuses() []Event {
 	for index := range engine.actors {
 		actor := &engine.actors[index]
 		if actor.MovementStatus == MovementStatusNone || actor.MovementStatus == MovementStatusForcedSlide ||
-			actor.MovementStatusExpiresAt == 0 || actor.MovementStatusExpiresAt > engine.elapsedMS {
+			actor.MovementStatusExpiresAt == 0 || actor.MovementStatusExpiresAt >= engine.elapsedMS {
 			continue
 		}
 		events = append(events, engine.clearMovementStatus(actor))

@@ -75,6 +75,8 @@ func TestHiddenPickupRevealsOnlyWhenWallIsDestroyed(t *testing.T) {
 	config.Grid.Cells[int(wall.Row)*int(config.Grid.Width)+int(wall.Col)] = Tile{Kind: CellBreakable, Durability: 2}
 	config.Pickups = []Pickup{{SceneID: SceneBombPowerSmall, Cell: wall, State: PickupHidden}}
 	engine := mustEngine(t, config)
+	// Install the fixture at the pre-movement explosion clock.
+	engine.elapsedMS = 100
 	engine.bombs = []Bomb{{ID: 1, OwnerID: 1, Cell: Cell{Row: 1, Col: 1}, Power: 2, ExplodeAtMS: 100}}
 	engine.nextBombID = 2
 	events, err := engine.Step(nil)
@@ -287,7 +289,7 @@ func TestSceneFourMarksBombsWithoutChangingCombatAndSceneSixtyTwoPreservesNative
 	if _, placed := engine.placeBomb(0); !placed || len(engine.bombs) != 1 || !engine.bombs[0].SceneFourEffect {
 		t.Fatalf("SceneID 4 bubble marker was not projected: %+v", engine.bombs)
 	}
-	if engine.bombs[0].ExplodeAtMS != engine.elapsedMS+engine.rules.BombFuseMS || engine.bombs[0].Power != engine.actors[0].BombPower {
+	if engine.bombs[0].ExplodeAtMS != engine.elapsedMS+engine.rules.BombFuseMS+1 || engine.bombs[0].Power != engine.actors[0].BombPower {
 		t.Fatalf("SceneID 4 changed combat fields: %+v", engine.bombs[0])
 	}
 	engine.elapsedMS = NativeSceneFourEffectMS + 1
@@ -509,7 +511,7 @@ func TestTransformationPickupReplacesExpiresAndProtectsFromOneHit(t *testing.T) 
 	engine.flames = nil
 	replacement.State = PickupAvailable
 	engine.collectPickup(actor, &replacement)
-	engine.elapsedMS = actor.TransformationExpiresAt
+	engine.elapsedMS = actor.TransformationExpiresAt + 1
 	events = engine.expireTransformations()
 	if actor.TransformationSceneID != 0 || len(events) != 1 || events[0].TransformationEnd != TransformationEndExpired {
 		t.Fatalf("transformation expiry actor/events = %+v/%+v", *actor, events)

@@ -11,6 +11,8 @@ func TestDestroyedVisiblePickupReturnsThroughNativeBirdQueue(t *testing.T) {
 	itemCell := Cell{Row: 1, Col: 4}
 	config.Pickups = []Pickup{{SceneID: SceneBombPowerSmall, Cell: itemCell, State: PickupAvailable}}
 	engine := mustEngine(t, config)
+	// Install the fixture at the pre-movement explosion clock.
+	engine.elapsedMS = 100
 	engine.bombs = []Bomb{{ID: 1, OwnerID: 1, Cell: Cell{Row: 1, Col: 3}, Power: 1, ExplodeAtMS: config.Rules.TickMS}}
 	engine.nextBombID = 2
 
@@ -30,7 +32,7 @@ func TestDestroyedVisiblePickupReturnsThroughNativeBirdQueue(t *testing.T) {
 		t.Fatal("Clone leaked bird queue storage")
 	}
 
-	for engine.ElapsedMS() < nativePickupDispatchIntervalMS {
+	for engine.ElapsedMS() <= nativePickupDispatchIntervalMS {
 		events, err = engine.Step(nil)
 		if err != nil {
 			t.Fatal(err)

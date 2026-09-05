@@ -153,6 +153,16 @@ func (runner *ONNXRuntimeRunner) validateSessionContract() error {
 		"scalars": {ort.TensorElementDataTypeFloat32, []int64{-1, int64(runner.contract.Scalars)}},
 		"legal":   {ort.TensorElementDataTypeBool, []int64{-1, int64(runner.contract.Actions)}},
 	}
+	if runner.contract.RecurrentHiddenSize > 0 {
+		wantInputs["memory"] = struct {
+			dtype ort.TensorElementDataType
+			shape []int64
+		}{ort.TensorElementDataTypeFloat32, []int64{-1, int64(runner.contract.RecurrentHiddenSize)}}
+		wantInputs["reset"] = struct {
+			dtype ort.TensorElementDataType
+			shape []int64
+		}{ort.TensorElementDataTypeBool, []int64{-1}}
+	}
 	inputs := runner.session.Inputs()
 	if len(inputs) != len(wantInputs) {
 		return fmt.Errorf("ONNX actor exposes %d inputs, want %d", len(inputs), len(wantInputs))
@@ -173,11 +183,24 @@ func (runner *ONNXRuntimeRunner) validateSessionContract() error {
 			)
 		}
 	}
+	wantOutputs := map[string][]int64{
+		"logits": {-1, int64(runner.contract.Actions)},
+	}
+	if runner.contract.RecurrentHiddenSize > 0 {
+		wantOutputs["next_memory"] = []int64{-1, int64(runner.contract.RecurrentHiddenSize)}
+	}
 	outputs := runner.session.Outputs()
-	if len(outputs) != 1 || outputs[0].Name != "logits" ||
-		outputs[0].DataType != ort.TensorElementDataTypeFloat32 ||
-		!equalONNXShape(outputs[0].Shape, []int64{-1, int64(runner.contract.Actions)}) {
-		return fmt.Errorf("ONNX actor output contract is not logits[-1,%d] float32", runner.contract.Actions)
+	if len(outputs) != len(wantOutputs) {
+		return fmt.Errorf("ONNX actor exposes %d outputs, want %d", len(outputs), len(wantOutputs))
+	}
+	for _, output := range outputs {
+		shape, ok := wantOutputs[output.Name]
+		if !ok {
+			return fmt.Errorf("ONNX actor exposes unexpected output %q", output.Name)
+		}
+		if output.DataType != ort.TensorElementDataTypeFloat32 || !equalONNXShape(output.Shape, shape) {
+			return fmt.Errorf("ONNX output %q has type/shape %s %v, want float32 %v", output.Name, output.DataType, output.Shape, shape)
+		}
 	}
 	return nil
 }
@@ -206,12 +229,39 @@ func (runner *ONNXRuntimeRunner) RunActor(
 	scalars []float32,
 	legal []uint8,
 ) ([]float32, error) {
+	if runner != nil && runner.contract.RecurrentHiddenSize > 0 {
+		return nil, fmt.Errorf("recurrent ONNX actor requires caller-owned memory")
+	}
+	logits, _, err := runner.runActor(spatial, scalars, legal, nil, false)
+	return logits, err
+}
+
+func (runner *ONNXRuntimeRunner) RunActorRecurrent(
+	spatial []float32,
+	scalars []float32,
+	legal []uint8,
+	memory []float32,
+	reset bool,
+) ([]float32, []float32, error) {
+	if runner == nil || runner.contract.RecurrentHiddenSize <= 0 {
+		return nil, nil, fmt.Errorf("ONNX actor is not recurrent")
+	}
+	return runner.runActor(spatial, scalars, legal, memory, reset)
+}
+
+func (runner *ONNXRuntimeRunner) runActor(
+	spatial []float32,
+	scalars []float32,
+	legal []uint8,
+	memory []float32,
+	reset bool,
+) ([]float32, []float32, error) {
 	if runner == nil || runner.session == nil {
-		return nil, fmt.Errorf("ONNX Runtime runner is not initialized")
+		return nil, nil, fmt.Errorf("ONNX Runtime runner is not initialized")
 	}
 	spatialCount := runner.contract.Channels * runner.contract.Height * runner.contract.Width
 	if len(spatial) != spatialCount || len(scalars) != runner.contract.Scalars || len(legal) != runner.contract.Actions {
-		return nil, fmt.Errorf(
+		return nil, nil, fmt.Errorf(
 			"ONNX actor input lengths spatial/scalars/legal=%d/%d/%d, want %d/%d/%d",
 			len(spatial), len(scalars), len(legal),
 			spatialCount, runner.contract.Scalars, runner.contract.Actions,
@@ -227,40 +277,80 @@ func (runner *ONNXRuntimeRunner) RunActor(
 		spatial,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create ONNX spatial tensor: %w", err)
+		return nil, nil, fmt.Errorf("create ONNX spatial tensor: %w", err)
 	}
 	defer spatialTensor.Close()
 	scalarTensor, err := ort.CreateTensor[float32]([]int64{1, int64(runner.contract.Scalars)}, scalars)
 	if err != nil {
-		return nil, fmt.Errorf("create ONNX scalar tensor: %w", err)
+		return nil, nil, fmt.Errorf("create ONNX scalar tensor: %w", err)
 	}
 	defer scalarTensor.Close()
 	legalTensor, err := ort.CreateTensor[bool]([]int64{1, int64(runner.contract.Actions)}, legalValues)
 	if err != nil {
-		return nil, fmt.Errorf("create ONNX legal tensor: %w", err)
+		return nil, nil, fmt.Errorf("create ONNX legal tensor: %w", err)
 	}
 	defer legalTensor.Close()
 
-	outputs, err := runner.session.Run(context.Background(), map[string]*ort.Tensor{
+	inputs := map[string]*ort.Tensor{
 		"spatial": spatialTensor,
 		"scalars": scalarTensor,
 		"legal":   legalTensor,
-	}, []string{"logits"})
+	}
+	outputNames := []string{"logits"}
+	var memoryTensor *ort.Tensor
+	var resetTensor *ort.Tensor
+	if runner.contract.RecurrentHiddenSize > 0 {
+		if len(memory) != runner.contract.RecurrentHiddenSize {
+			return nil, nil, fmt.Errorf(
+				"ONNX actor memory length %d, want %d",
+				len(memory), runner.contract.RecurrentHiddenSize,
+			)
+		}
+		memoryTensor, err = ort.CreateTensor[float32](
+			[]int64{1, int64(runner.contract.RecurrentHiddenSize)}, memory,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("create ONNX memory tensor: %w", err)
+		}
+		defer memoryTensor.Close()
+		resetTensor, err = ort.CreateTensor[bool]([]int64{1}, []bool{reset})
+		if err != nil {
+			return nil, nil, fmt.Errorf("create ONNX reset tensor: %w", err)
+		}
+		defer resetTensor.Close()
+		inputs["memory"] = memoryTensor
+		inputs["reset"] = resetTensor
+		outputNames = append(outputNames, "next_memory")
+	}
+
+	outputs, err := runner.session.Run(context.Background(), inputs, outputNames)
 	if err != nil {
-		return nil, fmt.Errorf("run ONNX actor: %w", err)
+		return nil, nil, fmt.Errorf("run ONNX actor: %w", err)
 	}
 	for _, output := range outputs {
 		defer output.Close()
 	}
 	logitTensor := outputs["logits"]
 	if logitTensor == nil || !equalONNXShape(logitTensor.Shape(), []int64{1, int64(runner.contract.Actions)}) {
-		return nil, fmt.Errorf("ONNX actor returned an invalid logits tensor")
+		return nil, nil, fmt.Errorf("ONNX actor returned an invalid logits tensor")
 	}
 	logits, err := ort.TensorData[float32](logitTensor)
 	if err != nil {
-		return nil, fmt.Errorf("read ONNX actor logits: %w", err)
+		return nil, nil, fmt.Errorf("read ONNX actor logits: %w", err)
 	}
-	return append([]float32(nil), logits...), nil
+	var nextMemory []float32
+	if runner.contract.RecurrentHiddenSize > 0 {
+		nextTensor := outputs["next_memory"]
+		if nextTensor == nil || !equalONNXShape(nextTensor.Shape(), []int64{1, int64(runner.contract.RecurrentHiddenSize)}) {
+			return nil, nil, fmt.Errorf("ONNX actor returned an invalid recurrent tensor")
+		}
+		nextMemory, err = ort.TensorData[float32](nextTensor)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read ONNX actor memory: %w", err)
+		}
+		nextMemory = append([]float32(nil), nextMemory...)
+	}
+	return append([]float32(nil), logits...), nextMemory, nil
 }
 
 // Close releases the model session. The process-wide ORT environment remains

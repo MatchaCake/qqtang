@@ -13,10 +13,12 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"qqtang/internal/accountauth"
 	"qqtang/internal/protocol/game"
 )
 
 var (
+	ErrAccountExists               = errors.New("player account already exists")
 	ErrInsufficientGameMoney       = errors.New("insufficient game money")
 	ErrInventoryItemOwned          = errors.New("non-stackable inventory item is already owned")
 	ErrInventoryItemMissing        = errors.New("inventory item is missing or exhausted")
@@ -76,6 +78,10 @@ func OpenPlayerStore(path string) (*PlayerStore, error) {
 func (store *PlayerStore) LoadOrCreate(ctx context.Context, uin uint32, seed game.PlayerProfile) (game.PlayerProfile, error) {
 	profile, err := store.Load(ctx, uin)
 	if err == nil {
+		profile.PlayerID, err = store.ensureUniquePlayerID(ctx, uin)
+		if err != nil {
+			return game.PlayerProfile{}, err
+		}
 		if err := store.EnsureDefaultPassword(ctx, uin); err != nil {
 			return game.PlayerProfile{}, err
 		}
@@ -87,13 +93,60 @@ func (store *PlayerStore) LoadOrCreate(ctx context.Context, uin uint32, seed gam
 	if err := seed.Validate(); err != nil {
 		return game.PlayerProfile{}, fmt.Errorf("validate seed profile: %w", err)
 	}
-	if err := store.Save(ctx, uin, seed); err != nil {
+	if err := store.CreateAccount(ctx, uin, seed, accountauth.DefaultPassword); err != nil {
+		if errors.Is(err, ErrAccountExists) {
+			return store.Load(ctx, uin)
+		}
 		return game.PlayerProfile{}, err
 	}
-	if err := store.EnsureDefaultPassword(ctx, uin); err != nil {
-		return game.PlayerProfile{}, err
+	return store.Load(ctx, uin)
+}
+
+// CreateAccount inserts profile, inventory and credentials together. The
+// unique UIN is claimed before saveProfileTx can update any existing rows.
+func (store *PlayerStore) CreateAccount(ctx context.Context, uin uint32, profile game.PlayerProfile, password string) error {
+	if uin == 0 {
+		return fmt.Errorf("player UIN must be non-zero")
 	}
-	return seed, nil
+	if err := profile.Validate(); err != nil {
+		return err
+	}
+	verifier, err := accountauth.NewVerifier(password)
+	if err != nil {
+		return err
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin account creation for UIN %d: %w", uin, err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `INSERT INTO local_players(uin, profile_json, created_utc, updated_utc)
+		VALUES(?, '{}', ?, ?) ON CONFLICT(uin) DO NOTHING`, uin, now, now)
+	if err != nil {
+		return fmt.Errorf("create account UIN %d: %w", uin, err)
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if inserted == 0 {
+		return ErrAccountExists
+	}
+	profile.PlayerID, err = availablePlayerIDTx(ctx, tx, uin, profile.PlayerID)
+	if err != nil {
+		return err
+	}
+	if err := saveProfileTx(ctx, tx, uin, profile); err != nil {
+		return err
+	}
+	if err := insertCredential(ctx, tx, uin, verifier, false); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit account creation for UIN %d: %w", uin, err)
+	}
+	return nil
 }
 
 func (store *PlayerStore) Load(ctx context.Context, uin uint32) (game.PlayerProfile, error) {

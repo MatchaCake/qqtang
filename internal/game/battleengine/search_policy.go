@@ -38,6 +38,10 @@ type SearchConfig struct {
 	EliminationValue float64
 	TrapValue        float64
 	AlwaysSearch     bool
+	// TacticalSafety is an offline teacher continuation. Production-aligned
+	// evaluation leaves it false because the live TopKSearchPolicy does not
+	// apply this stateful escape controller.
+	TacticalSafety bool
 }
 
 // GreedyCandidatePolicy runs the learned actor once and accepts its strongest
@@ -734,6 +738,9 @@ func evaluateSearchState(engine *Engine, beforeActors []Actor, beforeGrid Grid, 
 			}
 		}
 	}
+	if beforeSelf, ok := beforeByID[playerID]; ok {
+		value += searchPickupProgressValue(beforeSelf, self, config)
+	}
 	// Reward opening destructible terrain without inspecting the hidden item
 	// carried by a wall. This preserves the actor's information boundary.
 	for index, before := range beforeGrid.Cells {
@@ -757,4 +764,65 @@ func evaluateSearchState(engine *Engine, beforeActors []Actor, beforeGrid Grid, 
 		}
 	}
 	return value
+}
+
+const searchDevelopmentUnitValue = 0.75
+
+// searchPickupProgressValue scores only state changes that happened inside
+// the disposable authoritative rollout. It does not inspect hidden wall
+// contents and it does not assign a permanent preference to any map item.
+// Native attribute points and granted inventory are exact finite gains; a
+// newly held fork or transformation is additionally one recoverable hit.
+func searchPickupProgressValue(before, after Actor, config SearchConfig) float64 {
+	positiveByteDelta := func(old, current byte) float64 {
+		if current <= old {
+			return 0
+		}
+		return float64(current - old)
+	}
+	value := searchDevelopmentUnitValue * (positiveByteDelta(before.BombCapacity, after.BombCapacity) +
+		positiveByteDelta(before.BombPower, after.BombPower) +
+		positiveByteDelta(before.SpeedRate, after.SpeedRate))
+
+	for index := 0; index < NativeBattleActionSlots; index++ {
+		actionID, ok := NativeUseActionIDAt(index)
+		if !ok {
+			continue
+		}
+		oldCount := heldActionCount(before.HeldActions, actionID)
+		newCount := heldActionCount(after.HeldActions, actionID)
+		if newCount <= oldCount {
+			continue
+		}
+		gain := float64(newCount - oldCount)
+		value += searchDevelopmentUnitValue * gain
+		if actionID == 63 {
+			value += config.TrapValue * gain
+		}
+	}
+	if after.TransformationSceneID != 0 && after.TransformationSceneID != before.TransformationSceneID {
+		value += config.TrapValue
+	}
+	if after.MovementStatus == MovementStatusFast && before.MovementStatus != MovementStatusFast {
+		value += searchDevelopmentUnitValue
+	}
+	if after.HiddenPickupReachExpiresAt > before.HiddenPickupReachExpiresAt {
+		value += searchDevelopmentUnitValue
+	}
+	if after.SceneFourEffectExpiresAt > before.SceneFourEffectExpiresAt {
+		value += searchDevelopmentUnitValue
+	}
+	if after.OxygenValue > before.OxygenValue {
+		value += searchDevelopmentUnitValue * float64(after.OxygenValue-before.OxygenValue) / float64(NativeOxygenValueIncrement)
+	}
+	return value
+}
+
+func heldActionCount(slots [NativeBattleActionSlots]HeldActionSlot, actionID uint8) byte {
+	for _, slot := range slots {
+		if slot.ActionID == actionID {
+			return slot.Count
+		}
+	}
+	return 0
 }

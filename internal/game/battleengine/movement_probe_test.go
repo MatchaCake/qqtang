@@ -52,3 +52,39 @@ func TestResolveNativeMovementProbeCoversCornerThreshold(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeMovementClampsPrimaryAndCornerAtCellCenter(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		start     Position
+		direction Direction
+		wall      Cell
+		want      Position
+	}{
+		{"right wall", Position{98, 100}, DirectionRight, Cell{2, 3}, Position{100, 100}},
+		{"left wall", Position{101, 100}, DirectionLeft, Cell{2, 1}, Position{100, 100}},
+		{"up wall", Position{100, 101}, DirectionUp, Cell{1, 2}, Position{100, 100}},
+		{"down wall", Position{100, 98}, DirectionDown, Cell{3, 2}, Position{100, 100}},
+		{"right corner down", Position{60, 98}, DirectionRight, Cell{1, 2}, Position{60, 100}},
+		{"right corner up", Position{60, 102}, DirectionRight, Cell{3, 2}, Position{60, 100}},
+		{"down corner right", Position{98, 60}, DirectionDown, Cell{2, 1}, Position{100, 60}},
+		{"down corner left", Position{102, 60}, DirectionDown, Cell{2, 3}, Position{100, 60}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			grid := testOpenGrid(5, 5)
+			grid.Cells[int(test.wall.Row)*5+int(test.wall.Col)] = Tile{Kind: CellSolid}
+			for _, tick := range []uint32{20, 25} {
+				result, err := ResolveNativeMovementProbe(NativeMovementProbe{
+					Grid: grid, Position: test.start, Direction: test.direction,
+					TickMS: tick, SpeedPixelsPerSecond: 180,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !result.Moved || result.Position != test.want {
+					t.Fatalf("%d ms result=%+v, want centre %+v", tick, result, test.want)
+				}
+			}
+		})
+	}
+}

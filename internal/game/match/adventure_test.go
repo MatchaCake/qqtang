@@ -119,7 +119,7 @@ func TestAdventureNPCDeathAwardsSharedCourageIncludingStageEliminatedPlayer(t *t
 	}
 }
 
-func TestAdventureDoorwayConfirmationClosesMissedNPCNotificationGap(t *testing.T) {
+func TestAdventureDoorwayRequiresKnownStageNPCCompletion(t *testing.T) {
 	battle, err := NewAdventureBattleWithStage(16, 1649, 7, 3, 1, []AdventureParticipant{{PlayerID: 1, TeamID: 1}})
 	if err != nil {
 		t.Fatal(err)
@@ -128,11 +128,18 @@ func TestAdventureDoorwayConfirmationClosesMissedNPCNotificationGap(t *testing.T
 		t.Fatal(err)
 	}
 	if battle.CanAdvanceStage() {
-		t.Fatal("incomplete diagnostic death count unexpectedly opened the stage")
+		t.Fatal("incomplete NPC death count unexpectedly opened the stage")
 	}
-	observed, expected, err := battle.ConfirmStageDoorway()
-	if err != nil || observed != 1 || expected != 3 || !battle.CanAdvanceStage() {
-		t.Fatalf("doorway confirmation = observed %d expected %d advance %t err=%v", observed, expected, battle.CanAdvanceStage(), err)
+	if _, err := battle.PrepareNextStage(1); err == nil || battle.CanAdvanceStage() {
+		t.Fatalf("doorway request bypassed missing NPC deaths: %v", err)
+	}
+	for range 2 {
+		if _, err := battle.RecordNPCDeath(10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := battle.PrepareNextStage(1); err != nil || !battle.CanAdvanceStage() {
+		t.Fatalf("cleared stage rejected doorway: %v", err)
 	}
 }
 

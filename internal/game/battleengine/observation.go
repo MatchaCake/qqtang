@@ -192,10 +192,11 @@ func (engine *Engine) LegalActions(playerID uint16) ([]Action, error) {
 	}
 	if actor.State == ActorTrapped {
 		result := []Action{{PlayerID: playerID}}
-		if actorHeldActionCount(&actor, 63) != 0 {
-			// The fork is consumed before the independently held direction is
-			// evaluated. Once rescued, the actor may therefore move in the same
-			// input frame; there is no synthetic item-use recovery lock.
+		tile, inside := engine.grid.Cell(actor.Position.Cell())
+		if inside && tile.Kind == CellOpen && !tile.MapElementOccupied && actorHeldActionCount(&actor, 63) != 0 {
+			// The combined action holds a direction through self-rescue. Native
+			// input skips the trapped actor in the first frame, then consumes
+			// the still-held direction on the next frame after the item callback.
 			for _, direction := range [...]Direction{DirectionNone, DirectionUp, DirectionRight, DirectionDown, DirectionLeft} {
 				if direction == DirectionNone || engine.canProduceNativeMovement(actor, direction) {
 					result = append(result, Action{PlayerID: playerID, Move: direction, UseActionID: 63})
@@ -228,7 +229,7 @@ func (engine *Engine) LegalActions(playerID uint16) ([]Action, error) {
 		}
 	}
 	for _, actionID := range [...]uint8{41, 42, 43, 44, 46, 64} {
-		if actorHeldActionCount(&actor, actionID) != 0 {
+		if inside && tile.Kind == CellOpen && !tile.MapElementOccupied && actorHeldActionCount(&actor, actionID) != 0 {
 			for _, direction := range legalMoves {
 				result = append(result, Action{PlayerID: playerID, Move: direction, UseActionID: actionID})
 			}

@@ -32,8 +32,9 @@ func (timeline DangerTimeline) LastImpactAt(cell Cell) (uint32, bool) {
 	return timeline.valueAt(timeline.LatestImpactMS, cell)
 }
 
-// ClearAt returns the first time after which no already-visible flame wave is
-// expected to remain on the cell.
+// ClearAt returns the first millisecond strictly after the last known damage
+// impact on the cell. Visible flame lifetime is not a damage interval. The
+// earliest/latest summary remains conservative between separated future waves.
 func (timeline DangerTimeline) ClearAt(cell Cell) (uint32, bool) {
 	return timeline.valueAt(timeline.SafeAfterMS, cell)
 }
@@ -67,6 +68,17 @@ func (timeline DangerTimeline) valueAt(values []uint32, cell Cell) (uint32, bool
 // actor and outcome phases prevents a terminal player state from truncating a
 // purely environmental forecast while preserving production explosion rules.
 func (engine *Engine) DangerTimeline(horizonMS uint32) (DangerTimeline, error) {
+	return engine.dangerTimelineWithAdditionalBomb(horizonMS, nil)
+}
+
+// dangerTimelineWithAdditionalBomb projects one already-validated placement
+// without first cloning the complete engine merely to append it. The forecast
+// itself still advances an isolated clone through the production explosion
+// functions, so ordinary and counterfactual timelines share identical rules.
+func (engine *Engine) dangerTimelineWithAdditionalBomb(
+	horizonMS uint32,
+	additional *Bomb,
+) (DangerTimeline, error) {
 	if engine == nil {
 		return DangerTimeline{}, fmt.Errorf("battle engine is nil")
 	}
@@ -88,7 +100,7 @@ func (engine *Engine) DangerTimeline(horizonMS uint32) (DangerTimeline, error) {
 		timeline.LatestImpactMS[index] = NoDangerImpact
 		timeline.SafeAfterMS[index] = NoDangerImpact
 	}
-	recordImpact := func(cell Cell, impactAt, safeAfter uint32) {
+	recordImpact := func(cell Cell, impactAt uint32) {
 		index := int(cell.Row)*int(timeline.Width) + int(cell.Col)
 		if index < 0 || index >= len(timeline.EarliestImpactMS) {
 			return
@@ -102,20 +114,22 @@ func (engine *Engine) DangerTimeline(horizonMS uint32) (DangerTimeline, error) {
 				timeline.ImpactWaves[index]++
 			}
 		}
+		safeAfter := saturatingAdd(impactAt, 1)
 		if timeline.SafeAfterMS[index] == NoDangerImpact || safeAfter > timeline.SafeAfterMS[index] {
 			timeline.SafeAfterMS[index] = safeAfter
 		}
 	}
-	// A flame that is already visible is still tactically unsafe even though
-	// its one-shot impact happened before this forecast was requested.
-	for _, flame := range engine.flames {
-		if flame.ExpiresAtMS > engine.elapsedMS {
-			recordImpact(flame.Cell, engine.elapsedMS, flame.ExpiresAtMS)
-		}
-	}
+	// Existing flames are visual residue, not a new hit at GeneratedAtMS.
+	// Current-clock bombs can still be due in the next pre-movement phase.
+	// Re-arming the old flame objects here
+	// contradicts applyFlameHazards and prevents source-valid post-blast entry.
+	// A later explosion on the same cell is still recorded by the clone below.
 	clone := engine.Clone()
+	if additional != nil {
+		clone.bombs = append(clone.bombs, *additional)
+	}
 	deadline := saturatingAdd(engine.elapsedMS, horizonMS)
-	for clone.elapsedMS < deadline && (len(clone.bombs) != 0 || len(clone.projectiles) != 0) {
+	for clone.elapsedMS <= deadline && (len(clone.bombs) != 0 || len(clone.projectiles) != 0) {
 		nextDue := NoDangerImpact
 		for _, bomb := range clone.bombs {
 			if due := bomb.EffectiveExplodeAtMS(); due < nextDue {
@@ -130,9 +144,9 @@ func (engine *Engine) DangerTimeline(horizonMS uint32) (DangerTimeline, error) {
 		if nextDue == NoDangerImpact {
 			break
 		}
-		// Step evaluates timed objects only after advancing one whole engine
-		// tick. Jump directly to that same tick boundary instead of iterating
-		// through hundreds of empty ticks for every policy observation.
+		// Jump to the pre-movement boundary, including the current clock when
+		// a bomb is already due. Projectile timers were updated at the end of
+		// the preceding movement frame and are visible to this phase.
 		delta := uint32(0)
 		if nextDue > clone.elapsedMS {
 			delta = nextDue - clone.elapsedMS
@@ -141,11 +155,8 @@ func (engine *Engine) DangerTimeline(horizonMS uint32) (DangerTimeline, error) {
 		if delta%clone.rules.TickMS != 0 {
 			steps++
 		}
-		if steps == 0 {
-			steps = 1
-		}
 		next := saturatingAdd(clone.elapsedMS, steps*clone.rules.TickMS)
-		if next > deadline || next <= clone.elapsedMS {
+		if next > deadline || next < clone.elapsedMS {
 			break
 		}
 		clone.elapsedMS = next
@@ -156,7 +167,7 @@ func (engine *Engine) DangerTimeline(horizonMS uint32) (DangerTimeline, error) {
 			if flame.ImpactAtMS != clone.elapsedMS {
 				continue
 			}
-			recordImpact(flame.Cell, clone.elapsedMS, flame.ExpiresAtMS)
+			recordImpact(flame.Cell, clone.elapsedMS)
 		}
 	}
 	return timeline, nil
@@ -185,6 +196,7 @@ func (engine *Engine) SafetyMask(playerID uint16, holdMS uint32) (ActionMask, er
 			return ActionMask{}, fmt.Errorf("legal action ID %d cannot be decoded", id)
 		}
 		clone := engine.Clone()
+		clone.rules.NativeOutcomeAuthority = false
 		remaining := holdMS
 		first := true
 		for remaining > 0 && !clone.outcome.Ended {
@@ -207,6 +219,12 @@ func (engine *Engine) SafetyMask(playerID uint16, holdMS uint32) (ActionMask, er
 			}
 			first = false
 		}
+		// Include the impact at the hold endpoint: the next input cannot move
+		// the actor before that frame's hit callback. Keep the safety window
+		// closed at its deadline without inventing another movement step.
+		clone.explodeDueBombs()
+		clone.expireTransformations()
+		clone.applyFlameHazards()
 		actorIndex := clone.actorIndex(playerID)
 		if actorIndex >= 0 && clone.actors[actorIndex].State == ActorActive {
 			safe[id] = true

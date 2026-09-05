@@ -3,8 +3,9 @@ package probe
 import (
 	"io"
 	"net"
-	"path/filepath"
+	"os"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -13,6 +14,51 @@ import (
 	"qqtang/internal/game/match"
 	"qqtang/internal/protocol/game"
 )
+
+type competitiveAIActorPolicyFactoryProbe struct {
+	created int
+}
+
+func (*competitiveAIActorPolicyFactoryProbe) ChooseAction(
+	observation battleengine.Observation,
+	_ []battleengine.Action,
+) (battleengine.Action, error) {
+	return battleengine.Action{PlayerID: observation.PlayerID}, nil
+}
+
+func (factory *competitiveAIActorPolicyFactoryProbe) NewActorPolicy() battleengine.Policy {
+	factory.created++
+	return battleengine.PolicyFunc(func(
+		observation battleengine.Observation,
+		_ []battleengine.Action,
+	) (battleengine.Action, error) {
+		return battleengine.Action{PlayerID: observation.PlayerID}, nil
+	})
+}
+
+func TestCompetitiveAIRuntimeForksPolicyStatePerVirtualActor(t *testing.T) {
+	participants := []match.CompetitiveParticipant{
+		{PlayerID: 1, RoleID: 1, TeamID: 1, Source: match.CompetitiveParticipantHuman},
+		{PlayerID: 2, RoleID: 4, TeamID: 1, Source: match.CompetitiveParticipantHuman},
+		{PlayerID: 20001, RoleID: 2, TeamID: 2, Source: match.CompetitiveParticipantVirtualAI},
+		{PlayerID: 20002, RoleID: 3, TeamID: 2, Source: match.CompetitiveParticipantVirtualAI},
+	}
+	factory := &competitiveAIActorPolicyFactoryProbe{}
+	if _, err := newLiveCompetitiveAIRuntime(
+		7,
+		testCompetitiveAIMap(4),
+		game.GameBeginData{GameID: 99, SpawnSeed: 11, ItemSeed: 22},
+		participants,
+		false,
+		factory,
+		100,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if factory.created != 2 {
+		t.Fatalf("actor-local policies created = %d, want 2", factory.created)
+	}
+}
 
 func BenchmarkCompetitiveAILiveWorldStep(b *testing.B) {
 	participants := []match.CompetitiveParticipant{
@@ -27,27 +73,56 @@ func BenchmarkCompetitiveAILiveWorldStep(b *testing.B) {
 			PlayerID: 20001 + index, RoleID: 2, TeamID: teamID, Source: match.CompetitiveParticipantVirtualAI,
 		})
 	}
-	modelPath := filepath.Join("..", "..", "..", "configs", "models", "qqtang-rule1-selected-v2.qtai")
-	for _, searchEnabled := range []bool{false, true} {
-		name := "greedy"
-		if searchEnabled {
-			name = "top_k_search"
-		}
-		b.Run(name, func(b *testing.B) {
-			policy, err := battleai.LoadNativePolicy(modelPath, battleai.NativePolicyConfig{
+	modelPath := os.Getenv("QQTANG_AI_CANDIDATE_MODEL")
+	for _, benchmark := range []struct {
+		name           string
+		searchEnabled  bool
+		intraOpThreads int
+		freeForAll     bool
+	}{
+		{"greedy", false, 0, false},
+		{"greedy_single_thread", false, 1, false},
+		{"greedy_ffa_single_thread", false, 1, true},
+		{"top_k_search_single_thread", true, 1, false},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			participants := append([]match.CompetitiveParticipant(nil), participants...)
+			if benchmark.freeForAll {
+				for index := range participants {
+					participants[index].TeamID = byte(index + 1)
+				}
+			}
+			policyConfig := battleai.NativePolicyConfig{
 				DangerHorizonMS: 3_500,
-				EnableSearch:    searchEnabled,
+				DecisionMS:      100,
+				EnableSearch:    benchmark.searchEnabled,
 				Search: battleengine.SearchConfig{
 					TopK: 4, HorizonMS: battleengine.NativeBombFuseMS + 200, DangerHorizonMS: 3_500,
 					PriorWeight: 0.35, EliminationValue: 100, TrapValue: 12,
 				},
-			})
+			}
+			deployment := battleai.DeploymentPolicyConfig{Backend: battleai.DeploymentBackendNative, ModelPath: modelPath, NativePolicyConfig: policyConfig}
+			if onnx := os.Getenv("QQTANG_TEST_ONNX_MODEL"); onnx != "" {
+				deployment.Backend = battleai.DeploymentBackendONNXRuntime
+				deployment.ModelPath = onnx
+				deployment.MetadataPath = os.Getenv("QQTANG_TEST_ONNX_METADATA")
+				deployment.SharedLibraryPath = os.Getenv("QQTANG_TEST_ONNX_RUNTIME")
+				deployment.IntraOpThreads = benchmark.intraOpThreads
+				deployment.InterOpThreads = 1
+			}
+			if deployment.ModelPath == "" {
+				b.Skip("set QQTANG_TEST_ONNX_MODEL or QQTANG_AI_CANDIDATE_MODEL for inference benchmarking")
+			}
+			loaded, err := battleai.LoadDeploymentPolicy(deployment)
 			if err != nil {
 				b.Fatal(err)
 			}
+			if loaded.Closer != nil {
+				b.Cleanup(func() { _ = loaded.Closer.Close() })
+			}
 			runtime, err := newLiveCompetitiveAIRuntime(
 				7, testCompetitiveAIMap(8), game.GameBeginData{GameID: 99, SpawnSeed: 11, ItemSeed: 22},
-				participants, false, policy, 100,
+				participants, benchmark.freeForAll, loaded.Policy, 100,
 			)
 			if err != nil {
 				b.Fatal(err)
@@ -61,8 +136,12 @@ func BenchmarkCompetitiveAILiveWorldStep(b *testing.B) {
 				competitiveBattles:   map[uint32]*match.CompetitiveBattle{99: battle},
 				logWriter:            io.Discard,
 			}
+			stepDurations := make([]time.Duration, 0, b.N)
+			var maxStepDuration time.Duration
+			maxStepIndex := 0
 			b.ResetTimer()
 			for index := 0; index < b.N; index++ {
+				started := time.Now()
 				target := runtime.runtime.EngineSnapshot().ElapsedMS() + competitiveAIWorldTickMS
 				runtime.mu.Lock()
 				err = runtime.advanceToLocked(server, target, 1)
@@ -70,6 +149,22 @@ func BenchmarkCompetitiveAILiveWorldStep(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
+				duration := time.Since(started)
+				stepDurations = append(stepDurations, duration)
+				if duration > maxStepDuration {
+					maxStepDuration, maxStepIndex = duration, index
+				}
+			}
+			b.StopTimer()
+			sort.Slice(stepDurations, func(i, j int) bool { return stepDurations[i] < stepDurations[j] })
+			if len(stepDurations) > 0 {
+				b.ReportMetric(float64(stepDurations[(len(stepDurations)-1)*95/100].Nanoseconds())/1e6, "p95-ms/step")
+				b.ReportMetric(float64(stepDurations[len(stepDurations)-1].Nanoseconds())/1e6, "max-ms/step")
+				overBudget := len(stepDurations) - sort.Search(len(stepDurations), func(index int) bool {
+					return stepDurations[index] > time.Duration(competitiveAIWorldTickMS)*time.Millisecond
+				})
+				b.ReportMetric(float64(overBudget), "over-20ms-steps")
+				b.Logf("slowest world step: %d", maxStepIndex)
 			}
 		})
 	}
@@ -225,6 +320,57 @@ func TestCompetitiveAIMovementHeartbeatKeepsHeldSequence(t *testing.T) {
 	}
 }
 
+func TestCompetitiveAIMovementPathChangeFlushesWithoutChangingHeldSequence(t *testing.T) {
+	runtime, err := newLiveCompetitiveAIRuntime(
+		7, testCompetitiveAIMap(2), game.GameBeginData{GameID: 102, SpawnSeed: 11, ItemSeed: 22},
+		[]match.CompetitiveParticipant{
+			{PlayerID: 1, RoleID: 1, TeamID: 1, Source: match.CompetitiveParticipantHuman},
+			{PlayerID: 20001, RoleID: 2, TeamID: 2, Source: match.CompetitiveParticipantVirtualAI},
+		}, false,
+		battleengine.PolicyFunc(func(o battleengine.Observation, _ []battleengine.Action) (battleengine.Action, error) {
+			return battleengine.Action{PlayerID: o.PlayerID}, nil
+		}), 100,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := runtime.runtime.EngineSnapshot()
+	action := battleengine.Action{PlayerID: 20001, Move: battleengine.DirectionLeft}
+	if _, err = engine.Step([]battleengine.Action{action}); err != nil {
+		t.Fatal(err)
+	}
+	projection, first, emitted, err := competitiveAIMovementSample(engine, 20001, action, liveCompetitiveAIMovementProjection{}, false)
+	if err != nil || !emitted {
+		t.Fatalf("initial sample: %+v/%v/%v", first, emitted, err)
+	}
+	if _, err = engine.ApplyVerifiedBombPlacementAt(1, battleengine.Cell{Row: 1, Col: 2}, 1, 0, engine.ElapsedMS()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = engine.Step([]battleengine.Action{action}); err != nil {
+		t.Fatal(err)
+	}
+	_, changed, emitted, err := competitiveAIMovementSample(engine, 20001, action, projection, false)
+	if err != nil || !emitted || changed.Sequence != first.Sequence || changed.WalkAndDirection&0x20 != 0 {
+		t.Fatalf("changed path: %+v/%v/%v, want ordinary same-sequence flush", changed, emitted, err)
+	}
+	if changed.TimeStamp-first.TimeStamp != competitiveAIWorldTickMS || changed.EndPosX == first.EndPosX {
+		t.Fatalf("collision endpoint was not refreshed on the next world frame: first=%+v changed=%+v", first, changed)
+	}
+
+	// The native producer retains a previously advertised corner once the
+	// actor passes it, until the endpoint or held segment changes.
+	projection, _, _, err = competitiveAIMovementSample(engine, 20001, action, projection, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection.path.Corner = battleengine.Position{X: 139, Y: 60}
+	projection.path.HasCorner = true
+	_, continued, emitted, err := competitiveAIMovementSample(engine, 20001, action, projection, true)
+	if err != nil || !emitted || continued.CornerPosX != 139 || continued.CornerPosY != 60 || continued.Sequence != first.Sequence {
+		t.Fatalf("passed corner was discarded: %+v/%v/%v", continued, emitted, err)
+	}
+}
+
 func TestCompetitiveAIMovementInputBoundaryStartsNewSequence(t *testing.T) {
 	participants := []match.CompetitiveParticipant{
 		{PlayerID: 1, RoleID: 1, TeamID: 1, Source: match.CompetitiveParticipantHuman},
@@ -339,7 +485,7 @@ func TestCompetitiveAIMovementPublishesForcedSlideRate(t *testing.T) {
 	}
 }
 
-func TestCompetitiveAIHitMovementUsesEventCoordinateAndStopsNormalActor(t *testing.T) {
+func TestCompetitiveAIHitMovementUsesEventCoordinateAndStopsFacingDown(t *testing.T) {
 	grid := battleengine.Grid{Width: 10, Height: 8, Cells: make([]battleengine.Tile, 80)}
 	event := battleengine.Event{
 		Kind: battleengine.EventActorHitRequested, TimeMS: 4321, PlayerID: 20001,
@@ -350,16 +496,43 @@ func TestCompetitiveAIHitMovementUsesEventCoordinateAndStopsNormalActor(t *testi
 		initialized: true, moving: true, direction: battleengine.DirectionRight,
 		speed: 4, sequence: 9, lastSentAt: 4300,
 	}
-	stopped, move := competitiveAIHitMovementSample(event, false, frame, held, grid)
+	stopped, move := competitiveAIHitMovementSample(event, frame, held, grid)
 	if stopped.moving || stopped.sequence != 10 || stopped.lastSentAt != event.TimeMS || stopped.lastSentPosition != event.Position {
-		t.Fatalf("normal hit projection = %+v, want event-time stopped segment", stopped)
+		t.Fatalf("hit projection = %+v, want event-time stopped segment", stopped)
 	}
-	if move.TimeStamp != event.TimeMS || move.CurrentPosX != 123 || move.CurrentPosY != 77 || move.EndPosX != 123 || move.EndPosY != 77 || move.WalkAndDirection&0x20 == 0 || move.WalkAndDirection&0x10 != 0 {
-		t.Fatalf("normal hit movement = %+v, want bit-5 zero-length event checkpoint", move)
+	if move.TimeStamp != event.TimeMS || move.CurrentPosX != 123 || move.CurrentPosY != 77 || move.EndPosX != 123 || move.EndPosY != 77 || move.WalkAndDirection != 0x23 {
+		t.Fatalf("hit movement = %+v, want stopped downward bit-5 event checkpoint", move)
 	}
-	continued, avatarMove := competitiveAIHitMovementSample(event, true, frame, held, grid)
-	if !continued.moving || continued.sequence != held.sequence || avatarMove.WalkAndDirection&0x30 != 0x30 {
-		t.Fatalf("avatar hit movement = projection %+v move %+v, want held forced segment", continued, avatarMove)
+}
+
+func TestCompetitiveAIProjectileWireIncludesEmptyRayEndpoint(t *testing.T) {
+	runtime := &liveCompetitiveAIRuntime{bombs: map[uint32]liveCompetitiveAIBomb{
+		9: {ownerID: 20002, placedAt: 3500, power: 4, position: battleengine.Cell{Row: 6, Col: 10}},
+	}}
+	for _, actionID := range []uint8{44, 46} {
+		for _, bombID := range []uint32{0, 9} {
+			event := battleengine.Event{PlayerID: 20001, TimeMS: 4000, ActionID: actionID,
+				Position: battleengine.Position{X: 300, Y: 260}, BombID: bombID,
+				ProjectileDirection: battleengine.DirectionRight, ProjectileTargetCell: battleengine.Cell{Row: 6, Col: 10}}
+			use := runtime.battleActionSample(event)
+			body, err := use.MarshalNetworkBinary()
+			if err != nil {
+				t.Fatal(err)
+			}
+			wire, err := game.ParseWorldUseItemEvent(game.GameEvent{Schema: game.NotifyPlayerUseItem, Body: body})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wire.Flag1&0xffff != 0x060a || wire.PosX != 300 || wire.PosY != 260 {
+				t.Fatalf("projectile endpoint corrupted: %+v", wire)
+			}
+			if bombID == 0 && (wire.Flag2 != ^uint32(0) || wire.Flag3 != 0 || wire.Flag4 != 0) {
+				t.Fatalf("miss invented a target bomb: %+v", wire)
+			}
+			if bombID != 0 && (wire.Flag1>>16&0xff != 4 || wire.Flag2 != 20002 || wire.Flag3 != 3500 || wire.Flag4 != 1) {
+				t.Fatalf("hit lost target identity: %+v", wire)
+			}
+		}
 	}
 }
 
@@ -732,7 +905,7 @@ func TestCompetitiveAIHeldDirectionPolicyStopsAndRestartsImmediately(t *testing.
 	}
 }
 
-func TestCompetitiveAILivePolicyStabilizesFinalTacticalDirection(t *testing.T) {
+func TestCompetitiveAILivePolicyPreservesModelDirections(t *testing.T) {
 	choices := []battleengine.Direction{battleengine.DirectionRight, battleengine.DirectionLeft, battleengine.DirectionRight, battleengine.DirectionDown, battleengine.DirectionDown}
 	index := 0
 	policy := competitiveAILivePolicy(battleengine.PolicyFunc(func(observation battleengine.Observation, legal []battleengine.Action) (battleengine.Action, error) {
@@ -745,7 +918,7 @@ func TestCompetitiveAILivePolicyStabilizesFinalTacticalDirection(t *testing.T) {
 		{PlayerID: 20001, Move: battleengine.DirectionLeft},
 		{PlayerID: 20001, Move: battleengine.DirectionDown},
 	}
-	want := []battleengine.Direction{battleengine.DirectionRight, battleengine.DirectionRight, battleengine.DirectionRight, battleengine.DirectionRight, battleengine.DirectionDown}
+	want := choices
 	clocks := []uint32{3000, 3020, 3040, 3060, 3180}
 	for step, direction := range want {
 		got, err := policy.ChooseAction(battleengine.Observation{PlayerID: 20001, ClockMS: clocks[step]}, legal)
@@ -754,12 +927,9 @@ func TestCompetitiveAILivePolicyStabilizesFinalTacticalDirection(t *testing.T) {
 		}
 	}
 
-	outer, ok := policy.(*competitiveAIHeldDirectionPolicy)
+	_, ok := policy.(*competitiveAIDecisionCadencePolicy)
 	if !ok {
-		t.Fatalf("live policy outer wrapper = %T, want held-direction policy", policy)
-	}
-	if _, ok := outer.base.(*battleengine.TacticalSafetyPolicy); !ok {
-		t.Fatalf("live policy inner wrapper = %T, want tactical safety policy", outer.base)
+		t.Fatalf("live policy wrapper = %T, want decision-cadence policy", policy)
 	}
 }
 
@@ -1108,13 +1278,14 @@ func TestCompetitiveAIRejectedPickupStaysBlockedUntilSceneBoundary(t *testing.T)
 	if _, exists := runtime.pickupRequests[farKey]; !exists {
 		t.Fatal("unacknowledged pickup transaction was released on footprint exit")
 	}
-	force := runtime.projectEvents(nil, runtime.runtime.EngineSnapshot(), runtime.runtime.EngineSnapshot(), []battleengine.Event{{
+	sequenceBefore := runtime.messageSeq[20001]
+	runtime.projectEvents(nil, runtime.runtime.EngineSnapshot(), runtime.runtime.EngineSnapshot(), []battleengine.Event{{
 		Kind: battleengine.EventPickupCollectRequested, TimeMS: 3300,
 		PlayerID: 20001, SceneID: farPickup.SceneID, Cell: farCell,
 		Position: battleengine.PositionAtCellCenter(farCell),
 	}})
-	if _, forced := force[20001]; forced {
-		t.Fatal("suppressed duplicate pickup still forced a movement sample")
+	if runtime.messageSeq[20001] != sequenceBefore {
+		t.Fatal("suppressed duplicate pickup still produced a packet")
 	}
 	request := runtime.pickupRequests[farKey]
 	request.attempts = 3
@@ -1215,13 +1386,14 @@ func TestCompetitiveAINativeFieldContactCommitsAuthorityNotification(t *testing.
 		timeMS: 3_200, lastSentAt: 3_200, position: virtual.Position,
 		state: competitiveAIPickupPending, attempts: 1,
 	}
-	force := runtime.projectEvents(nil, snapshot, runtime.runtime.EngineSnapshot(), []battleengine.Event{{
+	sequenceBefore := runtime.messageSeq[virtual.PlayerID]
+	runtime.projectEvents(nil, snapshot, runtime.runtime.EngineSnapshot(), []battleengine.Event{{
 		Kind: battleengine.EventFieldObjectTriggered, TimeMS: 3_200,
 		PlayerID: human.PlayerID, TargetID: virtual.PlayerID,
 		Cell: virtual.Position.Cell(), Position: virtual.Position, ActionID: 43,
 	}})
-	if _, forced := force[virtual.PlayerID]; forced {
-		t.Fatal("suppressed duplicate field contact forced a movement sample")
+	if runtime.messageSeq[virtual.PlayerID] != sequenceBefore {
+		t.Fatal("suppressed duplicate field contact produced a packet")
 	}
 	if len(runtime.pickupRequests) != 1 {
 		t.Fatalf("field contact did not reuse target transaction: %+v", runtime.pickupRequests)
@@ -1344,8 +1516,11 @@ func TestCompetitiveAIReliableHitAuditCommitsExactPendingVirtualRequest(t *testi
 
 func TestCompetitiveAIReconcilesNativeBlastAgainstExactEventFrame(t *testing.T) {
 	newRuntime := func(gameID uint32) *liveCompetitiveAIRuntime {
+		selectedMap := testCompetitiveAIMap(2)
+		selectedMap.Battlefield.Height = 3
+		selectedMap.Battlefield.Cells = append(selectedMap.Battlefield.Cells, selectedMap.Battlefield.Cells[:4]...)
 		runtime, err := newLiveCompetitiveAIRuntime(
-			7, testCompetitiveAIMap(2), game.GameBeginData{GameID: gameID, SpawnSeed: 11, ItemSeed: 22},
+			7, selectedMap, game.GameBeginData{GameID: gameID, SpawnSeed: 11, ItemSeed: 22},
 			[]match.CompetitiveParticipant{
 				{PlayerID: 1, RoleID: 1, TeamID: 1, Source: match.CompetitiveParticipantHuman},
 				{PlayerID: 20001, RoleID: 2, TeamID: 2, Source: match.CompetitiveParticipantVirtualAI},
@@ -1418,6 +1593,46 @@ func TestCompetitiveAIReconcilesNativeBlastAgainstExactEventFrame(t *testing.T) 
 	}
 	if _, ok = runtime.actorFrameAtLocked(20001, 5000); ok {
 		t.Fatal("future authority event reused the latest stale position frame")
+	}
+
+	// Native blast registration uses the centre's discrete cell, not the
+	// movement footprint. Check all four one-pixel boundaries through the live
+	// timestamp/history adapter, including a later frame that has escaped again.
+	for _, boundary := range []struct {
+		name          string
+		outside, edge battleengine.Position
+	}{
+		{"left", battleengine.Position{X: 39, Y: 60}, battleengine.Position{X: 40, Y: 60}},
+		{"right", battleengine.Position{X: 80, Y: 60}, battleengine.Position{X: 79, Y: 60}},
+		{"top", battleengine.Position{X: 60, Y: 39}, battleengine.Position{X: 60, Y: 40}},
+		{"bottom", battleengine.Position{X: 60, Y: 80}, battleengine.Position{X: 60, Y: 79}},
+	} {
+		t.Run(boundary.name, func(t *testing.T) {
+			live := newRuntime(94)
+			outside := initialFrame
+			outside.position = boundary.outside
+			inside := outside
+			inside.position = boundary.edge
+			live.positionHistory = []liveCompetitiveAIPositionFrame{
+				{timeMS: 4000, actors: map[uint16]liveCompetitiveAIActorFrame{20001: outside}},
+				{timeMS: 4020, actors: map[uint16]liveCompetitiveAIActorFrame{20001: inside}},
+				{timeMS: 4040, actors: map[uint16]liveCompetitiveAIActorFrame{20001: outside}},
+			}
+			blast := []battleengine.VerifiedExplodedBomb{{
+				OwnerID: 1, Cell: battleengine.Cell{Row: 1, Col: 1},
+				BlastRowMin: 1, BlastRowMax: 1, BlastColMin: 1, BlastColMax: 1,
+			}}
+			for _, at := range []uint32{4000, 4019, 4020, 4039, 4040} {
+				requests := live.reconcileVirtualExplosionHits(blast, at)
+				wantHit := at >= 4020 && at < 4040
+				if (len(requests) == 1) != wantHit || len(requests) > 1 {
+					t.Fatalf("at %d: hit=%t requests=%+v", at, wantHit, requests)
+				}
+				if wantHit && (requests[0].Position != boundary.edge || requests[0].TimeMS != at) {
+					t.Fatalf("at %d: request lost impact position/time: %+v", at, requests)
+				}
+			}
+		})
 	}
 }
 

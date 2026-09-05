@@ -31,6 +31,8 @@ type Contract struct {
 	Height                   int     `json:"height"`
 	Width                    int     `json:"width"`
 	BatchDynamic             bool    `json:"batch_dynamic"`
+	RecurrentHiddenSize      int     `json:"recurrent_hidden_size,omitempty"`
+	RecurrentReset           string  `json:"recurrent_reset,omitempty"`
 	ONNXSHA256               string  `json:"onnx_sha256,omitempty"`
 	MaximumParityError       float64 `json:"maximum_parity_error"`
 	MeanParityError          float64 `json:"mean_parity_error"`
@@ -68,10 +70,12 @@ func (contract Contract) Validate() error {
 	switch {
 	case contract.Format != ONNXActorFormat && contract.Format != NativeActorFormat:
 		return fmt.Errorf("unknown AI model format %q", contract.Format)
-	case contract.ContractVersion != 1:
+	case contract.ContractVersion != 1 && contract.ContractVersion != 2:
 		return fmt.Errorf("unsupported AI contract version %d", contract.ContractVersion)
-	case contract.TensorVersion != battleenv.TensorSchemaVersion:
-		return fmt.Errorf("AI tensor version %d, server expects %d", contract.TensorVersion, battleenv.TensorSchemaVersion)
+	case contract.ContractVersion == 1 && contract.RecurrentHiddenSize != 0:
+		return fmt.Errorf("AI contract version 1 cannot declare recurrent memory")
+	case contract.ContractVersion == 2 && contract.RecurrentHiddenSize <= 0:
+		return fmt.Errorf("AI contract version 2 requires recurrent memory")
 	case contract.Channels != battleenv.SpatialChannels:
 		return fmt.Errorf("AI spatial channels %d, server expects %d", contract.Channels, battleenv.SpatialChannels)
 	case contract.Scalars != battleenv.ScalarFeatures:

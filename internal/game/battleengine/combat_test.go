@@ -13,6 +13,8 @@ func TestExplosionStopsAtSolidAndBreakableCellsAndChainsBombs(t *testing.T) {
 	config.Participants[0].Spawn = Cell{Row: 2, Col: 2}
 	config.Participants[1].Spawn = Cell{Row: 4, Col: 6}
 	engine := mustEngine(t, config)
+	// Install the fixture at the pre-movement explosion clock.
+	engine.elapsedMS = 100
 	engine.bombs = []Bomb{
 		{ID: 1, OwnerID: 1, Cell: Cell{Row: 2, Col: 2}, Power: 3, ExplodeAtMS: 100},
 		{ID: 2, OwnerID: 2, Cell: Cell{Row: 2, Col: 3}, Power: 1, ExplodeAtMS: 9_000},
@@ -23,9 +25,11 @@ func TestExplosionStopsAtSolidAndBreakableCellsAndChainsBombs(t *testing.T) {
 		t.Fatal(err)
 	}
 	var exploded []uint32
+	triggeredBy := make(map[uint32]uint32)
 	for _, event := range events {
 		if event.Kind == EventBombExploded {
 			exploded = append(exploded, event.BombID)
+			triggeredBy[event.BombID] = event.TriggeredByBombID
 		}
 	}
 	if !reflect.DeepEqual(exploded, []uint32{1, 2}) {
@@ -33,6 +37,9 @@ func TestExplosionStopsAtSolidAndBreakableCellsAndChainsBombs(t *testing.T) {
 	}
 	if len(engine.bombs) != 0 {
 		t.Fatalf("chain left bombs behind: %+v", engine.bombs)
+	}
+	if triggeredBy[1] != 0 || triggeredBy[2] != 1 {
+		t.Fatalf("chain provenance = %v, want root 1 and 2 triggered by 1", triggeredBy)
 	}
 	if tile, _ := engine.grid.Cell(Cell{Row: 2, Col: 4}); tile.Kind != CellOpen {
 		t.Fatalf("breakable cell survived as %d", tile.Kind)
@@ -64,7 +71,7 @@ func TestTrapRescueOpponentFinishAndTerminal(t *testing.T) {
 	}
 
 	engine.actors[0].State = ActorTrapped
-	engine.actors[1].Position = PositionAtCellCenter(Cell{Row: 0, Col: 0})
+	engine.actors[1].Position = PositionAtCellCenter(Cell{Row: 0, Col: 4})
 	engine.actors[2].Position = engine.actors[0].Position
 	events, err = engine.Step(nil)
 	if err != nil {
@@ -99,6 +106,33 @@ func TestTrapTimeoutEliminatesActor(t *testing.T) {
 	}
 	if engine.actors[1].State != ActorEliminated || !engine.Terminal().Ended || engine.Terminal().WinnerTeamID != 1 {
 		t.Fatalf("trap timeout state=%d outcome=%+v events=%+v", engine.actors[1].State, engine.Terminal(), events)
+	}
+}
+
+func TestBombIdentitySurvivesTrapUntilElimination(t *testing.T) {
+	engine := mustEngine(t, testConfig())
+	actor := &engine.actors[0]
+	engine.elapsedMS = 100
+	engine.flames = []Flame{{
+		Cell: actor.Position.Cell(), OwnerID: actor.PlayerID, BombID: 77,
+		ImpactAtMS: engine.elapsedMS, ExpiresAtMS: engine.elapsedMS + 500,
+	}}
+
+	trapEvents := engine.applyFlameHazards()
+	if actor.State != ActorTrapped || actor.TrappedByBombID != 77 {
+		t.Fatalf("bomb trap state=%d bomb=%d", actor.State, actor.TrappedByBombID)
+	}
+	if len(trapEvents) != 1 || trapEvents[0].Kind != EventActorTrapped || trapEvents[0].BombID != 77 {
+		t.Fatalf("bomb trap events = %+v", trapEvents)
+	}
+
+	actor.TrapExpiresAt = engine.elapsedMS
+	deathEvents := engine.expireTraps()
+	if len(deathEvents) == 0 || deathEvents[0].Kind != EventActorEliminated || deathEvents[0].BombID != 77 {
+		t.Fatalf("bomb elimination events = %+v", deathEvents)
+	}
+	if actor.TrappedByBombID != 0 {
+		t.Fatalf("eliminated actor retained bomb ID %d", actor.TrappedByBombID)
 	}
 }
 
@@ -189,7 +223,7 @@ func TestVirtualContactRequestsNativeKillWithoutInventingHumanDeath(t *testing.T
 		t.Fatalf("continuous native contact repeated request: %+v", second)
 	}
 
-	engine.actors[1].Position = PositionAtCellCenter(Cell{Row: 0, Col: 0})
+	engine.actors[1].Position = PositionAtCellCenter(Cell{Row: 0, Col: 4})
 	if _, err = engine.Step(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -226,6 +260,8 @@ func TestFlameTraversalIsIndependentFromActorCollision(t *testing.T) {
 	config.Participants[0].Spawn = Cell{Row: 1, Col: 1}
 	config.Participants[1].Spawn = Cell{Row: 2, Col: 6}
 	engine := mustEngine(t, config)
+	// Install the fixture at the pre-movement explosion clock.
+	engine.elapsedMS = 100
 	engine.bombs = []Bomb{{ID: 1, OwnerID: 1, Cell: Cell{Row: 1, Col: 1}, Power: 5, ExplodeAtMS: 100}}
 	engine.nextBombID = 2
 	if _, err := engine.Step(nil); err != nil {
@@ -677,6 +713,8 @@ func TestBreakableDurabilityConsumesOneHitAtATime(t *testing.T) {
 	config.Participants[0].Spawn = Cell{Row: 1, Col: 1}
 	config.Participants[1].Spawn = Cell{Row: 2, Col: 4}
 	engine := mustEngine(t, config)
+	// Install the fixture at the pre-movement explosion clock.
+	engine.elapsedMS = 100
 	engine.bombs = []Bomb{{ID: 1, OwnerID: 1, Cell: Cell{Row: 1, Col: 1}, Power: 2, ExplodeAtMS: 100}}
 	engine.nextBombID = 2
 	events, err := engine.Step(nil)

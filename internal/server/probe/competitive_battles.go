@@ -55,15 +55,7 @@ func (server *Server) scheduleCompetitiveTimeout(schedule competitiveTimeoutSche
 		return
 	}
 	server.log(logEvent{Level: "info", Event: "competitive_timeout_scheduled", RoomID: fmt.Sprint(schedule.RoomID), Result: fmt.Sprintf("game_%d_duration_%s", schedule.GameID, schedule.Duration)})
-	go func() {
-		timer := time.NewTimer(schedule.Duration)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-			server.completeCompetitiveTimeout(schedule)
-		case <-server.done:
-		}
-	}()
+	server.runAfter(schedule.Duration, func() { server.completeCompetitiveTimeout(schedule) })
 }
 
 func (server *Server) completeCompetitiveTimeout(schedule competitiveTimeoutSchedule) {

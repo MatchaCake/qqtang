@@ -3,13 +3,11 @@ package battleengine
 import "sort"
 
 func (engine *Engine) placeBomb(actorIndex int) (Event, bool) {
-	actor := &engine.actors[actorIndex]
-	cell := actor.Position.Cell()
-	capacity := engine.actorCapabilities(actor, actor.Facing).EffectiveBombCapacity
-	if engine.activeBombCount(actor.PlayerID) >= int(capacity) || engine.bombAt(cell) >= 0 {
+	bomb, ok := engine.prospectiveBomb(actorIndex, true)
+	if !ok {
 		return Event{}, false
 	}
-	return engine.placeBombOnSnapshotEmptyCell(actorIndex)
+	return engine.commitBomb(bomb), true
 }
 
 // placeBombOnSnapshotEmptyCell is used by Step after it has evaluated native
@@ -19,28 +17,49 @@ func (engine *Engine) placeBomb(actorIndex int) (Event, bool) {
 // Consequently, different players that all pass their local check in one
 // input frame may produce multiple bubbles in one cell (the native 叠炮 race).
 func (engine *Engine) placeBombOnSnapshotEmptyCell(actorIndex int) (Event, bool) {
+	bomb, ok := engine.prospectiveBomb(actorIndex, false)
+	if !ok {
+		return Event{}, false
+	}
+	return engine.commitBomb(bomb), true
+}
+
+// prospectiveBomb applies the same placement/capacity rules as the native
+// producer without mutating engine state. requireEmpty distinguishes ordinary
+// sequential placement from Step's already-validated simultaneous stack race.
+func (engine *Engine) prospectiveBomb(actorIndex int, requireEmpty bool) (Bomb, bool) {
 	actor := &engine.actors[actorIndex]
 	cell := actor.Position.Cell()
+	if requireEmpty && engine.bombAt(cell) >= 0 {
+		return Bomb{}, false
+	}
 	// The original local producer rejects placement unless the actor's scene
 	// cell is an ordinary open grid cell. Native pass/up-wall can temporarily
 	// render an actor over scenery, but it does not turn that scenery into a
 	// legal bubble cell.
 	tile, inside := engine.grid.Cell(cell)
 	if !inside || tile.Kind != CellOpen || tile.MapElementOccupied {
-		return Event{}, false
+		return Bomb{}, false
 	}
 	capacity := engine.actorCapabilities(actor, actor.Facing).EffectiveBombCapacity
 	if engine.activeBombCount(actor.PlayerID) >= int(capacity) {
-		return Event{}, false
+		return Bomb{}, false
 	}
-	bomb := Bomb{
+	return Bomb{
 		ID: engine.nextBombID, OwnerID: actor.PlayerID, Cell: cell, Power: actor.BombPower,
-		ExplodeAtMS:     saturatingAdd(engine.elapsedMS, engine.rules.BombFuseMS),
+		// 005df7d0 requires a negative remaining fuse; zero is still armed.
+		ExplodeAtMS:     saturatingAdd(saturatingAdd(engine.elapsedMS, engine.rules.BombFuseMS), 1),
 		SceneFourEffect: engine.sceneFourEffectActive(actor),
-	}
+	}, true
+}
+
+func (engine *Engine) commitBomb(bomb Bomb) Event {
 	engine.nextBombID++
 	engine.bombs = append(engine.bombs, bomb)
-	return Event{Kind: EventBombPlaced, TimeMS: engine.elapsedMS, PlayerID: actor.PlayerID, BombID: bomb.ID, Cell: cell}, true
+	return Event{
+		Kind: EventBombPlaced, TimeMS: engine.elapsedMS, PlayerID: bomb.OwnerID,
+		BombID: bomb.ID, Cell: bomb.Cell,
+	}
 }
 
 func (engine *Engine) explodeDueBombs() []Event {
@@ -49,12 +68,18 @@ func (engine *Engine) explodeDueBombs() []Event {
 
 func (engine *Engine) explodeDueBombsMatching(acceptRoot func(Bomb) bool) []Event {
 	queue := make([]uint32, 0)
-	scheduled := make(map[uint32]bool)
+	var scheduled map[uint32]bool
 	for _, bomb := range engine.bombs {
 		if bomb.EffectiveExplodeAtMS() <= engine.elapsedMS && (acceptRoot == nil || acceptRoot(bomb)) {
+			if scheduled == nil {
+				scheduled = make(map[uint32]bool)
+			}
 			queue = append(queue, bomb.ID)
 			scheduled[bomb.ID] = true
 		}
+	}
+	if len(queue) == 0 {
+		return []Event{}
 	}
 	exploded := make(map[uint32]bool)
 	events := make([]Event, 0)
@@ -86,11 +111,11 @@ func (engine *Engine) explodeDueBombsMatching(acceptRoot func(Bomb) bool) []Even
 		}
 		events = append(events, Event{
 			Kind: EventBombExploded, TimeMS: engine.elapsedMS, PlayerID: bomb.OwnerID,
-			BombID: bomb.ID, Cell: bomb.Cell,
+			BombID: bomb.ID, TriggeredByBombID: bomb.TriggeredByBombID, Cell: bomb.Cell,
 			BlastRowMin: rowMin, BlastRowMax: rowMax, BlastColMin: colMin, BlastColMax: colMax,
 		})
 		for _, cell := range blastCells {
-			engine.addFlame(cell, bomb.OwnerID)
+			engine.addBombFlame(cell, bomb.OwnerID, bomb.ID)
 		}
 		events = append(events, wallEvents...)
 	}
@@ -162,11 +187,17 @@ func (engine *Engine) blastCells(bomb Bomb, scheduled map[uint32]bool, queue *[]
 				if otherBombObject.FlightUntilMS > engine.elapsedMS {
 					if otherBombObject.ExplodeAtMS > engine.elapsedMS {
 						otherBombObject.ExplodeAtMS = engine.elapsedMS
+						if otherBombObject.TriggeredByBombID == 0 {
+							otherBombObject.TriggeredByBombID = bomb.ID
+						}
 					}
 					continue
 				}
 				if !scheduled[otherID] {
 					scheduled[otherID] = true
+					if otherBombObject.TriggeredByBombID == 0 {
+						otherBombObject.TriggeredByBombID = bomb.ID
+					}
 					*queue = append(*queue, otherID)
 				}
 			}
@@ -179,24 +210,29 @@ func (engine *Engine) blastCells(bomb Bomb, scheduled map[uint32]bool, queue *[]
 }
 
 func (engine *Engine) addFlame(cell Cell, ownerID uint16) {
+	engine.addBombFlame(cell, ownerID, 0)
+}
+
+func (engine *Engine) addBombFlame(cell Cell, ownerID uint16, bombID uint32) {
 	expires := saturatingAdd(engine.elapsedMS, engine.rules.FlameDurationMS)
-	for index := range engine.flames {
-		if engine.flames[index].Cell == cell {
-			engine.flames[index].ImpactAtMS = engine.elapsedMS
-			if engine.flames[index].ExpiresAtMS < expires {
-				engine.flames[index].ExpiresAtMS = expires
-			}
-			engine.flames[index].OwnerID = ownerID
-			return
-		}
-	}
-	engine.flames = append(engine.flames, Flame{Cell: cell, OwnerID: ownerID, ImpactAtMS: engine.elapsedMS, ExpiresAtMS: expires})
-	sort.Slice(engine.flames, func(i, j int) bool {
-		if engine.flames[i].Cell.Row != engine.flames[j].Cell.Row {
-			return engine.flames[i].Cell.Row < engine.flames[j].Cell.Row
-		}
-		return engine.flames[i].Cell.Col < engine.flames[j].Cell.Col
+	// The list is kept in cell order. Insert one cell instead of sorting the
+	// complete list after every arm pixel in every speculative explosion.
+	index := sort.Search(len(engine.flames), func(i int) bool {
+		other := engine.flames[i].Cell
+		return other.Row > cell.Row || (other.Row == cell.Row && other.Col >= cell.Col)
 	})
+	if index < len(engine.flames) && engine.flames[index].Cell == cell {
+		engine.flames[index].ImpactAtMS = engine.elapsedMS
+		if engine.flames[index].ExpiresAtMS < expires {
+			engine.flames[index].ExpiresAtMS = expires
+		}
+		engine.flames[index].OwnerID = ownerID
+		engine.flames[index].BombID = bombID
+		return
+	}
+	engine.flames = append(engine.flames, Flame{})
+	copy(engine.flames[index+1:], engine.flames[index:len(engine.flames)-1])
+	engine.flames[index] = Flame{Cell: cell, OwnerID: ownerID, BombID: bombID, ImpactAtMS: engine.elapsedMS, ExpiresAtMS: expires}
 }
 
 func (engine *Engine) expireFlames() {

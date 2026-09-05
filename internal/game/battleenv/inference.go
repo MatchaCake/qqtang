@@ -24,12 +24,32 @@ type EncodedActor struct {
 // EncodeActor converts one visibility-bounded observation with a public
 // rule-derived danger timeline into the exact training tensor schema.
 func EncodeActor(
+	snapshot *battleengine.Engine,
 	observation battleengine.Observation,
 	danger battleengine.DangerTimeline,
 	legal battleengine.ActionMask,
 	height int,
 	width int,
 ) (EncodedActor, error) {
+	return EncodeActorAtDecision(
+		snapshot, observation, danger, legal, height, width, 0,
+	)
+}
+
+// EncodeActorAtDecision keeps per-direction consequence features aligned with
+// the interval for which deployment holds one learned direction.
+func EncodeActorAtDecision(
+	snapshot *battleengine.Engine,
+	observation battleengine.Observation,
+	danger battleengine.DangerTimeline,
+	legal battleengine.ActionMask,
+	height int,
+	width int,
+	decisionMS uint32,
+) (EncodedActor, error) {
+	if snapshot == nil {
+		return EncodedActor{}, fmt.Errorf("inference battle snapshot is nil")
+	}
 	if height < int(observation.Grid.Height) || width < int(observation.Grid.Width) {
 		return EncodedActor{}, fmt.Errorf(
 			"inference tensor %dx%d is smaller than map %dx%d",
@@ -40,7 +60,21 @@ func EncodeActor(
 		return EncodedActor{}, fmt.Errorf("inference tensor dimensions must be positive")
 	}
 	tensors := newTensorBatch(1, 1, height, width)
-	if err := encodeActor(&tensors, 0, 0, observation, danger, legal); err != nil {
+	var consequences battleengine.TacticalConsequences
+	var err error
+	if decisionMS == 0 {
+		consequences, err = snapshot.TacticalConsequencesForPlayer(
+			observation.PlayerID, danger,
+		)
+	} else {
+		consequences, err = snapshot.TacticalConsequencesForPlayerAtDecision(
+			observation.PlayerID, danger, decisionMS,
+		)
+	}
+	if err != nil {
+		return EncodedActor{}, fmt.Errorf("inference tactical consequences: %w", err)
+	}
+	if err := encodeActor(&tensors, 0, 0, observation, danger, consequences, legal); err != nil {
 		return EncodedActor{}, err
 	}
 	return EncodedActor{

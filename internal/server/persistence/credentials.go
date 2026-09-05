@@ -18,7 +18,21 @@ func (store *PlayerStore) EnsureDefaultPassword(ctx context.Context, uin uint32)
 	if configured {
 		return nil
 	}
-	return store.SetPassword(ctx, uin, accountauth.DefaultPassword)
+	verifier, err := accountauth.NewVerifier(accountauth.DefaultPassword)
+	if err != nil {
+		return err
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// A GM reset may have completed after HasPassword. Bootstrap must never
+	// replace that explicit password with the default.
+	if err := insertCredential(ctx, tx, uin, verifier, false); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (store *PlayerStore) HasPassword(ctx context.Context, uin uint32) (bool, error) {

@@ -13,9 +13,23 @@ func nativeFieldSceneID(sceneID uint32) bool {
 
 func (engine *Engine) useHeldAction(actorIndex int, actionID uint8) ([]Event, bool) {
 	actor := &engine.actors[actorIndex]
+	// Local input handler 006102d9 rejects any static map object under the
+	// actor, even a walkable one. Verified peer notifications use the separate
+	// consumer below, without rerunning this producer-side condition.
+	tile, inside := engine.grid.Cell(actor.Position.Cell())
+	if !inside || tile.Kind != CellOpen || tile.MapElementOccupied {
+		return nil, false
+	}
 	targetBombID := uint32(0)
+	var targetCell Cell
 	if actionID == 44 || actionID == 46 {
-		targetBombID = engine.firstBombInFacingRay(actor)
+		var reachable bool
+		targetCell, targetBombID, reachable = engine.nativeActionProjectileTarget(actor)
+		if !reachable {
+			// FUN_00610631 produces no request when even the adjacent cell is
+			// blocked. It does not consume the item or invent a (0,0) target.
+			return nil, false
+		}
 	}
 	if engine.rules.NativeOutcomeAuthority && actor.Source == ParticipantVirtualAI {
 		if !canUseHeldAction(actor, actionID) {
@@ -27,6 +41,7 @@ func (engine *Engine) useHeldAction(actorIndex int, actionID uint8) ([]Event, bo
 			Kind: EventBattleActionUseRequested, TimeMS: engine.elapsedMS,
 			PlayerID: actor.PlayerID, BombID: targetBombID,
 			Cell: actor.Position.Cell(), Position: actor.Position, ActionID: actionID,
+			ProjectileTargetCell: targetCell, ProjectileDirection: actor.Facing,
 		}}, true
 	}
 	return engine.useHeldActionAt(actorIndex, actionID, actor.Position, targetBombID)
@@ -42,6 +57,7 @@ func (engine *Engine) useHeldActionAt(actorIndex int, actionID uint8, position P
 		case 63:
 			actor.State = ActorActive
 			actor.TrappedBy = 0
+			actor.TrappedByBombID = 0
 			actor.TrapExpiresAt = 0
 		default:
 			return nil, false
@@ -162,26 +178,36 @@ func (engine *Engine) overlappingActiveActorIDs(cell Cell) []uint16 {
 }
 
 func (engine *Engine) firstBombInFacingRay(actor *Actor) uint32 {
+	_, bombID, _ := engine.nativeActionProjectileTarget(actor)
+	return bombID
+}
+
+func (engine *Engine) nativeActionProjectileTarget(actor *Actor) (Cell, uint32, bool) {
 	dx, dy, ok := actor.Facing.delta()
 	if !ok || actor.Facing == DirectionNone {
-		return 0
+		return Cell{}, 0, false
 	}
 	cell := actor.Position.Cell()
+	last, reachable := cell, false
 	// FUN_00610631 scans up to max(map width, map height), stopping at the
 	// first blocked transition or object. There is no separate 3/5-screen
 	// range cap in the final client; the map edge is the maximum range.
 	for distance := 1; distance < max(int(engine.grid.Width), int(engine.grid.Height)); distance++ {
+		previous, _ := engine.grid.Cell(cell)
 		cell.Row += int16(dy)
 		cell.Col += int16(dx)
 		tile, inside := engine.grid.Cell(cell)
-		if !inside || tile.Kind != CellOpen {
-			return 0
+		// 00610631 -> 005d8c3c -> CMapElem+30 checks flame traversal on
+		// both sides of a transition, independently of player collision.
+		if !inside || !previous.FlamePassable || !tile.FlamePassable {
+			break
 		}
+		last, reachable = cell, true
 		if index := engine.bombAt(cell); index >= 0 {
-			return engine.bombs[index].ID
+			return cell, engine.bombs[index].ID, true
 		}
 	}
-	return 0
+	return last, 0, reachable
 }
 
 func (engine *Engine) resolveActionProjectiles() {
@@ -225,7 +251,7 @@ func (engine *Engine) resolveFieldObjectContacts() []Event {
 			// authority trace a field in (0,6) rejected contacts while the virtual
 			// actor's centre was still in (0,5), even though its footprint already
 			// overlapped the field cell.
-			if actor.State != ActorActive || engine.actorHarmProtected(actor) || containsSortedPlayerID(object.PassableBy, actor.PlayerID) || actor.Position.Cell() != object.Cell {
+			if actor.State != ActorActive || actor.nativePreviousPosition.Cell() == actor.Position.Cell() || engine.actorHarmProtected(actor) || containsSortedPlayerID(object.PassableBy, actor.PlayerID) || actor.Position.Cell() != object.Cell {
 				continue
 			}
 			// A real participant reports its own native contact. A virtual actor has
@@ -254,11 +280,13 @@ func (engine *Engine) resolveFieldObjectContacts() []Event {
 					consumed = true
 					break
 				}
+				engine.resetActorOnHit(actor)
 				if actor.TransformationSceneID != 0 {
 					events = append(events, engine.endTransformation(actor, TransformationEndHit, object.OwnerID))
 				} else {
 					actor.State = ActorTrapped
 					actor.TrappedBy = object.OwnerID
+					actor.TrappedByBombID = 0
 					if duration := engine.trapDuration(actor); duration != 0 {
 						actor.TrapExpiresAt = saturatingAdd(engine.elapsedMS, duration)
 					}

@@ -94,7 +94,7 @@ func (engine *Engine) destroyBlastObjectsAtCell(cell Cell, ownerID uint16, bombI
 	if engine == nil {
 		return nil
 	}
-	events := make([]Event, 0, 1)
+	events := []Event{}
 	for index := range engine.pickups {
 		pickup := &engine.pickups[index]
 		if pickup.Cell != cell || pickup.State != PickupAvailable {

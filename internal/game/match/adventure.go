@@ -297,30 +297,6 @@ func (battle *AdventureBattle) CanAdvanceStage() bool {
 	return !battle.concluded && !battle.finalVictoryPending && (battle.expectedNPCDeaths == 0 || battle.stageCompleted)
 }
 
-// ConfirmStageDoorway commits the native client's doorway transition as the
-// authoritative proof that the current stage is complete.  NPC death events
-// remain useful for progress and final-stage auto settlement, but they travel
-// through the mutable arbitrator and may be missing across an authority
-// handoff.  A validated REQUEST_GAME_NEXTMAP can only be produced by a living
-// participant after the client has opened and entered the stage exit, so an
-// incomplete server-side diagnostic count must not deadlock the route.
-func (battle *AdventureBattle) ConfirmStageDoorway() (observed, expected uint32, err error) {
-	if battle == nil {
-		return 0, 0, fmt.Errorf("adventure battle is nil")
-	}
-	battle.mu.Lock()
-	defer battle.mu.Unlock()
-	if battle.concluded {
-		return battle.npcDeathCount, battle.expectedNPCDeaths, fmt.Errorf("adventure battle %d is already concluded", battle.gameID)
-	}
-	if battle.finalVictoryPending {
-		return battle.npcDeathCount, battle.expectedNPCDeaths, fmt.Errorf("adventure battle %d is waiting for final loot grace settlement", battle.gameID)
-	}
-	observed, expected = battle.npcDeathCount, battle.expectedNPCDeaths
-	battle.stageCompleted = true
-	return observed, expected, nil
-}
-
 func (battle *AdventureBattle) RecordPlayerRescue(playerID uint16, score uint32) error {
 	if battle == nil {
 		return fmt.Errorf("adventure battle is nil")
@@ -666,6 +642,12 @@ func (battle *AdventureBattle) PrepareNextStage(requesterID uint16) (AdventureSt
 	}
 	if battle.finalVictoryPending {
 		return AdventureStageTransition{}, fmt.Errorf("adventure battle %d is waiting for final loot grace settlement", battle.gameID)
+	}
+	// A doorway request does not create missing NPC deaths. Counts for known
+	// stages come from the installed battlefield's NPC instances. Keep this
+	// check under the same lock as participant and outcome validation.
+	if battle.expectedNPCDeaths != 0 && !battle.stageCompleted {
+		return AdventureStageTransition{}, fmt.Errorf("adventure battle %d stage %d is not cleared: NPC deaths %d of %d", battle.gameID, battle.mapID, battle.npcDeathCount, battle.expectedNPCDeaths)
 	}
 	transition := AdventureStageTransition{}
 	for playerID, participant := range battle.participants {

@@ -292,7 +292,7 @@ func TestPandaThrownBombKeepsFuseButCannotExplodeBeforeLanding(t *testing.T) {
 	if got := engine.bombs[0].EffectiveExplodeAtMS(); got != NativeBombFlightMS {
 		t.Fatalf("effective thrown fuse = %d, want %d", got, NativeBombFlightMS)
 	}
-	for elapsed := uint32(100); elapsed < NativeBombFlightMS; elapsed += config.Rules.TickMS {
+	for elapsed := uint32(100); elapsed <= NativeBombFlightMS; elapsed += config.Rules.TickMS {
 		events, err := engine.Step(nil)
 		if err != nil {
 			t.Fatal(err)
@@ -322,7 +322,7 @@ func TestPandaThrownBombDoesNotResetLongerOriginalFuse(t *testing.T) {
 	if got := engine.bombs[0].EffectiveExplodeAtMS(); got != 900 {
 		t.Fatalf("long fuse was reset by throw: %d", got)
 	}
-	for engine.elapsedMS < 800 {
+	for engine.elapsedMS < 900 {
 		if _, err := engine.Step(nil); err != nil {
 			t.Fatal(err)
 		}

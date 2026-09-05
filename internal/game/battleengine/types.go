@@ -437,10 +437,15 @@ func (memory PublicBehaviorMemory) MatchRate(kind PublicBehaviorKind) float32 {
 
 type Actor struct {
 	Participant
-	Position                   Position
-	State                      ActorState
-	Facing                     Direction
-	TrappedBy                  uint16
+	Position  Position
+	State     ActorState
+	Facing    Direction
+	TrappedBy uint16
+	// TrappedByBombID preserves the exact authoritative bubble that produced
+	// the flame hit. Zero denotes a non-bomb/native-reconciled trap. Keeping
+	// this beside TrappedBy lets offline training carry causal credit through
+	// the several-second trapped state until the later elimination event.
+	TrappedByBombID            uint32
 	TrapExpiresAt              uint32
 	HiddenPickupReachExpiresAt uint32
 	SceneFourEffectExpiresAt   uint32
@@ -471,7 +476,10 @@ type Actor struct {
 	NativePassActive             bool
 	NativePassStartedAt          uint32
 	NativePassDurationMS         uint32
-	moveRemainder                uint32
+	// Native 005ad322 retains the previous coordinate in actor +0x3a8/+0x3ac.
+	// 005f43b1 dispatches pickup/contact handlers only across that cell boundary.
+	nativePreviousPosition Position
+	moveRemainder          uint32
 }
 
 type Bomb struct {
@@ -481,6 +489,11 @@ type Bomb struct {
 	Power         byte
 	ExplodeAtMS   uint32
 	FlightUntilMS uint32
+	// TriggeredByBombID is the stable identity of the explosion that shortened
+	// this bomb's fuse. Zero means the bomb remained a natural fuse root. The
+	// link is retained until EventBombExploded so offline training can recover
+	// the real, variable-length chain instead of guessing from nearby cells.
+	TriggeredByBombID uint32
 	// SceneFourEffect is the exact boolean appended to the native 0x0FA3
 	// placement event while SceneID 4's 30-second client effect is active.
 	// Client.exe only consumes it through the bubble effect-0x40 rendering
@@ -502,6 +515,7 @@ func (bomb Bomb) EffectiveExplodeAtMS() uint32 {
 type Flame struct {
 	Cell    Cell
 	OwnerID uint16
+	BombID  uint32
 	// ImpactAtMS is the instant at which this explosion arm intersects
 	// actors. The native 0x0FA5 path is emitted once by the explosion state;
 	// the remaining 500 ms is visual/flame-object lifetime, not a repeating
@@ -646,11 +660,16 @@ const (
 )
 
 type Event struct {
-	Kind              EventKind
-	TimeMS            uint32
-	PlayerID          uint16
-	TargetID          uint16
-	BombID            uint32
+	Kind     EventKind
+	TimeMS   uint32
+	PlayerID uint16
+	TargetID uint16
+	BombID   uint32
+	// TriggeredByBombID is populated only for EventBombExploded. It names the
+	// immediately preceding bomb in the authoritative chain; following these
+	// links reaches every actual chain ancestor without treating simultaneous
+	// natural-fuse explosions as causal.
+	TriggeredByBombID uint32
 	Cell              Cell
 	FromCell          Cell
 	Position          Position
@@ -667,8 +686,12 @@ type Event struct {
 	TransformationEnd TransformationEndReason
 	ActionID          uint8
 	ActionCount       uint8
-	ObjectID          uint32
-	MovementStatus    MovementStatusKind
+	// Native 44/46 requests always carry a ray endpoint, including a miss.
+	// BombID alone cannot represent an empty endpoint.
+	ProjectileTargetCell Cell
+	ProjectileDirection  Direction
+	ObjectID             uint32
+	MovementStatus       MovementStatusKind
 	// Blast bounds are populated only for EventBombExploded. They mirror the
 	// four inclusive row/column limits carried by native EXPLODED_BOMB_C and
 	// let the live adapter serialize the exact engine result without

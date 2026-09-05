@@ -60,6 +60,7 @@ func (engine *Engine) ApplyVerifiedMovementCheckpoint(playerID uint16, position 
 			actor.NativePassStartedAt = 0
 			actor.NativePassDurationMS = 0
 		}
+		actor.nativePreviousPosition = actor.Position
 		actor.Position = position
 		actor.moveRemainder = 0
 		return nil
@@ -98,7 +99,7 @@ func (engine *Engine) ApplyVerifiedBombPlacementAt(playerID uint16, cell Cell, p
 	}
 	bomb := Bomb{
 		ID: engine.nextBombID, OwnerID: playerID, Cell: cell, Power: byte(power),
-		ExplodeAtMS: saturatingAdd(placedAtMS, engine.rules.BombFuseMS), SceneFourEffect: property != 0,
+		ExplodeAtMS: saturatingAdd(saturatingAdd(placedAtMS, engine.rules.BombFuseMS), 1), SceneFourEffect: property != 0,
 	}
 	engine.nextBombID++
 	engine.bombs = append(engine.bombs, bomb)

@@ -224,18 +224,27 @@ func (session *connectionSession) packetTemplate() []byte {
 	return append([]byte(nil), packet...)
 }
 
-func (server *Server) registerLiveSession(session *connectionSession, connection net.Conn, id, local, remote string) {
+func (server *Server) registerLiveSession(session *connectionSession, connection net.Conn, id, local, remote string) bool {
 	session.connection = connection
 	session.connectionID = id
 	session.localAddress = local
 	session.remoteAddress = remote
 	session.openedAt = time.Now()
 	server.liveMu.Lock()
+	defer server.liveMu.Unlock()
+	// Close signals done before scanning liveSessions under this same lock.
+	// A socket is therefore either in that scan or rejected here, even when
+	// its accepted handler was not scheduled until shutdown had begun.
+	select {
+	case <-server.done:
+		return false
+	default:
+	}
 	if server.liveSessions == nil {
 		server.liveSessions = make(map[net.Conn]*connectionSession)
 	}
 	server.liveSessions[connection] = session
-	server.liveMu.Unlock()
+	return true
 }
 
 // prepareSessionContinuation runs before handleTCPMessage takes session.mu.

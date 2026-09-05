@@ -127,6 +127,28 @@ func (service *PlayerService) Save(ctx context.Context, uin uint32, profile game
 	return service.repository.Save(ctx, uin, profile)
 }
 
+// UpdateProfile holds the same account lock as purchases and settlement from
+// the initial read through the final save. Callers change only requested
+// fields; unrelated inventory and progression come from the current record.
+func (service *PlayerService) UpdateProfile(ctx context.Context, uin uint32, update func(*game.PlayerProfile) error) (game.PlayerProfile, error) {
+	if service == nil || service.repository == nil || update == nil {
+		return game.PlayerProfile{}, fmt.Errorf("profile update requires a player service and update function")
+	}
+	unlock := service.lockPlayer(uin)
+	defer unlock()
+	profile, err := service.repository.Load(ctx, uin)
+	if err != nil {
+		return game.PlayerProfile{}, err
+	}
+	if err := update(&profile); err != nil {
+		return game.PlayerProfile{}, err
+	}
+	if err := service.repository.Save(ctx, uin, profile); err != nil {
+		return game.PlayerProfile{}, err
+	}
+	return service.projectEquipmentLocked(ctx, uin, profile)
+}
+
 // ConsumeInventoryItems serializes every involved account in stable UIN order,
 // performs one repository transaction, and returns fresh profile projections.
 func (service *PlayerService) ConsumeInventoryItems(ctx context.Context, requests []persistence.InventoryConsumption) (map[uint32]game.PlayerProfile, error) {

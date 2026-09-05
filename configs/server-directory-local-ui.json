@@ -105,11 +105,12 @@
   "competitive_ai": {
     "enabled": true,
     "backend": "onnxruntime",
-    "model_path": "models/qqtang-rule1-selected-v2.onnx",
-    "metadata_path": "models/qqtang-rule1-selected-v2.onnx.json",
+    "model_path": "models/qqtang-rule1.onnx",
     "shared_library_path": "../runtime/onnxruntime/windows-amd64/onnxruntime.dll",
+    "intra_op_threads": 1,
+    "inter_op_threads": 1,
     "tick_ms": 100,
-    "search_enabled": true
+    "search_enabled": false
   },
   "player_profile": {
     "nickname": "糖一",

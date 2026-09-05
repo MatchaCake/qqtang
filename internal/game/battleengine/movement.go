@@ -11,6 +11,7 @@ func (engine *Engine) moveActor(actorIndex int, direction Direction) ([]Event, b
 func (engine *Engine) moveActorInWorldDirection(actorIndex int, direction Direction) ([]Event, bool) {
 	actor := &engine.actors[actorIndex]
 	actor.Facing = direction
+	actor.nativePreviousPosition = actor.Position
 	distance := engine.consumeNativeMovementDistance(actor, direction, engine.rules.TickMS)
 	if distance == 0 {
 		return nil, false
@@ -30,12 +31,20 @@ func (engine *Engine) moveActorInWorldDirection(actorIndex int, direction Direct
 			return events, false
 		}
 	}
-	engine.resolveNativeMovementDisplacement(actor, direction, distance, !interactionAttempted)
+	moveEvents, moved := engine.moveActorDisplacement(actorIndex, direction, start, distance, !interactionAttempted)
+	return append(events, moveEvents...), moved
+}
+
+// moveActorDisplacement applies only geometry. Step has already processed the
+// native generic push/kick callback before the hit callback and must not charge
+// the same contact counter again during the later movement phase.
+func (engine *Engine) moveActorDisplacement(actorIndex int, direction Direction, start Position, distance int, allowCorner bool) ([]Event, bool) {
+	actor := &engine.actors[actorIndex]
+	engine.resolveNativeMovementDisplacement(actor, direction, distance, allowCorner)
 	if actor.Position == start {
-		return events, false
+		return nil, false
 	}
-	events = append(events, Event{Kind: EventActorMoved, TimeMS: engine.elapsedMS, PlayerID: actor.PlayerID, Position: actor.Position, Cell: actor.Position.Cell()})
-	return events, true
+	return []Event{{Kind: EventActorMoved, TimeMS: engine.elapsedMS, PlayerID: actor.PlayerID, Position: actor.Position, Cell: actor.Position.Cell()}}, true
 }
 
 func (engine *Engine) consumeNativeMovementDistance(actor *Actor, direction Direction, elapsedMS uint32) int {
@@ -53,9 +62,8 @@ func (engine *Engine) consumeNativeMovementDistance(actor *Actor, direction Dire
 
 // resolveNativeMovementDisplacement is the single physical displacement path
 // shared by authoritative movement and AI legality probes. It mirrors one
-// FUN_005cfc10 update: the full primary-axis displacement is accepted or
-// rejected atomically, then the same distance may be consumed by the native
-// perpendicular corner branch.
+// FUN_005cfc10 update: try the full primary-axis displacement, then its
+// walkable cell-centre clamp, then the perpendicular corner branch.
 func (engine *Engine) resolveNativeMovementDisplacement(actor *Actor, direction Direction, distance int, allowCorner bool) bool {
 	if actor == nil || distance <= 0 {
 		return false
@@ -69,14 +77,47 @@ func (engine *Engine) resolveNativeMovementDisplacement(actor *Actor, direction 
 		X: start.X + dx*int32(distance),
 		Y: start.Y + dy*int32(distance),
 	}
-	if engine.movementSegmentWalkable(actor, start, direction, distance) {
+	blockedCandidate, blocked := engine.nativeMovementSegmentCollision(actor, start, direction, distance)
+	if !blocked {
 		actor.Position = candidate
 		return true
 	}
+	// FUN_005cfc10 first tests the next centre on the travel axis when the
+	// full displacement collides. If that centre is walkable and lies within
+	// this update, stop there. Omitting this branch left 20 ms actors a few
+	// pixels short of the endpoint produced by the 25 ms native projection.
+	partial := nativeMovementDistanceToCenter(start, direction, distance)
+	if partial < distance && engine.movementSegmentWalkable(actor, start, direction, partial) {
+		actor.Position = Position{X: start.X + dx*int32(partial), Y: start.Y + dy*int32(partial)}
+		return true
+	}
 	if allowCorner {
-		engine.applyNativeCornerCorrection(actor, candidate, direction, distance)
+		// The swept check may stop inside a bomb's three-pixel entry strip
+		// even when candidate has already crossed it. Corner classification
+		// must use the point that actually blocked movement; reclassifying the
+		// far endpoint loses the collision and falsely advertises a dead end.
+		engine.applyNativeCornerCorrection(actor, blockedCandidate, direction, distance)
 	}
 	return actor.Position != start
+}
+
+func nativeMovementDistanceToCenter(position Position, direction Direction, distance int) int {
+	coordinate, sign := position.X, int32(1)
+	if direction == DirectionUp || direction == DirectionDown {
+		coordinate = position.Y
+	}
+	if direction == DirectionLeft || direction == DirectionUp {
+		sign = -1
+	}
+	center := coordinate - positiveRemainder(coordinate, CellSizePixels) + CellSizePixels/2
+	remaining := (center - coordinate) * sign
+	if remaining <= 0 {
+		remaining += CellSizePixels
+	}
+	if remaining < int32(distance) {
+		return int(remaining)
+	}
+	return distance
 }
 
 func (engine *Engine) tryActorWorldInteraction(actorIndex int, direction Direction) (Event, bool) {
@@ -177,7 +218,7 @@ func (engine *Engine) kickBombDestination(source Cell, direction Direction) (Cel
 	for distance := int16(8); distance >= 1; distance-- {
 		candidate := Cell{Row: source.Row + int16(dy)*distance, Col: source.Col + int16(dx)*distance}
 		tile, inside := engine.grid.Cell(candidate)
-		if inside && tile.Kind == CellOpen {
+		if inside && tile.Kind == CellOpen && !tile.MapElementOccupied {
 			return candidate, true
 		}
 	}
@@ -441,6 +482,19 @@ func (engine *Engine) ProjectNativeMovement(playerID uint16, direction Direction
 		}
 		result.End = actor.Position
 	}
+	// FUN_005cf9b8 normalizes only the travel-axis endpoint's trailing 9/1
+	// pixel to the adjacent multiple of ten after the resolver has stopped.
+	// It never retries a blocked update with a shorter displacement.
+	coordinate := &result.End.Y
+	if direction == DirectionLeft || direction == DirectionRight {
+		coordinate = &result.End.X
+	}
+	switch *coordinate % 10 {
+	case 9:
+		*coordinate++
+	case 1:
+		*coordinate--
+	}
 	return result, nil
 }
 
@@ -469,18 +523,6 @@ func (engine *Engine) projectNativeMovementStep(actor *Actor, direction Directio
 			return direction, true
 		}
 		return movementDirectionBetween(start, actor.Position), true
-	}
-	// FUN_005cfc10 clamps its disposable endpoint to the exact collision edge.
-	// The authoritative render-frame integrator intentionally keeps its atomic
-	// full-displacement rule, but PLAYER_MOVE endpoint construction must retain
-	// the last walkable partial pixel or the advertised wall coordinate changes
-	// with the sender's sub-frame phase.
-	for partial := distance - 1; partial > 0; partial-- {
-		candidate = Position{X: start.X + dx*int32(partial), Y: start.Y + dy*int32(partial)}
-		if engine.movementSegmentWalkable(actor, start, direction, partial) {
-			actor.Position = candidate
-			return direction, true
-		}
 	}
 	return DirectionNone, false
 }
@@ -544,12 +586,19 @@ func (engine *Engine) positionWalkable(actor *Actor, position Position, directio
 // engine therefore sweeps every integer pixel while retaining the native
 // all-or-nothing displacement and corner-correction result for the update.
 func (engine *Engine) movementSegmentWalkable(actor *Actor, start Position, direction Direction, distance int) bool {
+	_, blocked := engine.nativeMovementSegmentCollision(actor, start, direction, distance)
+	return !blocked
+}
+
+// nativeMovementSegmentCollision retains the first blocking candidate for the
+// resolver's perpendicular branch. No coordinate is committed by this probe.
+func (engine *Engine) nativeMovementSegmentCollision(actor *Actor, start Position, direction Direction, distance int) (Position, bool) {
 	if actor == nil || distance <= 0 {
-		return false
+		return start, true
 	}
 	dx, dy, ok := direction.delta()
 	if !ok || direction == DirectionNone {
-		return false
+		return start, true
 	}
 	for partial := 1; partial <= distance; partial++ {
 		candidate := Position{
@@ -557,10 +606,10 @@ func (engine *Engine) movementSegmentWalkable(actor *Actor, start Position, dire
 			Y: start.Y + dy*int32(partial),
 		}
 		if !engine.positionWalkable(actor, candidate, direction) {
-			return false
+			return candidate, true
 		}
 	}
-	return true
+	return Position{}, false
 }
 
 func nativePassTouchOrder(collisions [2]nativePointCollisionResult, direction Direction) [2]Cell {
@@ -628,6 +677,9 @@ func (engine *Engine) applyNativeCornerCorrection(actor *Actor, blockedCandidate
 	}
 
 	dx, dy, _ := correction.delta()
+	// The native corner branch also stops at its target centre instead of
+	// overshooting it and correcting back on the next fixed frame.
+	distance = nativeMovementDistanceToCenter(actor.Position, correction, distance)
 	actor.Position.X += dx * int32(distance)
 	actor.Position.Y += dy * int32(distance)
 	return true
