@@ -135,3 +135,17 @@ func TestRoomChatNotificationRejectsPlayerMessageWithoutNickname(t *testing.T) {
 		t.Fatal("player room chat accepted an empty nickname")
 	}
 }
+
+func TestRoomAndSectionChatNotificationNicknameLimits(t *testing.T) {
+	packet := makeLocalPacketForTest(t, append(buildInnerHeaderForTest(RoomChatCommand), make([]byte, RoomChatHeaderSize+5)...))
+	if _, err := BuildLocalRoomChatNotification(packet, RoomChatNotification{
+		SourcePlayerID: 1, DestinationPlayerID: 2, Nickname: "12345678901234567890", Content: "hello",
+	}); err != nil {
+		t.Fatalf("room chat rejected a 20-byte nickname: %v", err)
+	}
+	if _, err := BuildLocalSectionChatNotification(packet, SectionChatNotification{
+		SourcePlayerID: 1, Nickname: "12345678901234567890", Content: "hello",
+	}); err == nil {
+		t.Fatal("section chat accepted a 20-byte nickname")
+	}
+}

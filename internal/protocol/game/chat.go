@@ -255,7 +255,7 @@ func marshalRoomChatNotification(message RoomChatNotification) ([]byte, error) {
 		// "说:". Sending only the user text makes the first nickname-length
 		// bytes of the chat disappear; a two-character GBK name eats 7 bytes
 		// ("1234567890" becomes "890", and leftover GBK fragments render as boxes).
-		encoded, err = encodeNamedChatMessage(message.Nickname, message.Content, SectionChatNicknameMaximum)
+		encoded, err = encodeNamedChatMessage(message.Nickname, message.Content, PlayerNicknameSlotSize)
 		if err != nil {
 			return nil, err
 		}
