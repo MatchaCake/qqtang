@@ -138,8 +138,9 @@ func competitiveBossCandidateSatisfied(candidate mapdata.CompetitiveBossCandidat
 }
 
 // competitiveBossCandidateConsumptionPlan chooses the first complete option
-// for every active participant. The returned plan is still read-only; one
-// later SQLite transaction owns the actual all-player debit.
+// for every active participant, then excludes ownership-only requirements.
+// The returned plan is still read-only; one later SQLite transaction owns
+// the actual all-player debit.
 func competitiveBossCandidateConsumptionPlan(candidate mapdata.CompetitiveBossCandidate, participants []match.CompetitiveParticipant, inventories map[uint16][]game.ItemInfo) (map[uint16][]mapdata.CompetitiveBossItemRequirement, bool, error) {
 	switch candidate.Activation {
 	case mapdata.CompetitiveBossActivationUnconditional:
@@ -177,7 +178,11 @@ func competitiveBossCandidateConsumptionPlan(candidate mapdata.CompetitiveBossCa
 			if len(selected) == 0 {
 				return nil, false, nil
 			}
-			plan[participant.PlayerID] = selected
+			for _, requirement := range selected {
+				if !requirement.OwnershipOnly {
+					plan[participant.PlayerID] = append(plan[participant.PlayerID], requirement)
+				}
+			}
 		}
 		return plan, true, nil
 	default:

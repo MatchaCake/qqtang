@@ -74,14 +74,16 @@ const (
 	// room permits unequal team sizes.
 	CompetitiveBossActivationUnconditional CompetitiveBossActivationKind = "unconditional"
 	// CompetitiveBossActivationAllPlayersOwn requires every active player to
-	// satisfy one complete item option. The server then verifies and consumes
-	// every selected option in one all-or-nothing transaction.
+	// satisfy one complete item option. Only its consumable requirements enter
+	// the subsequent all-or-nothing inventory transaction.
 	CompetitiveBossActivationAllPlayersOwn CompetitiveBossActivationKind = "all_players_own"
 )
 
 type CompetitiveBossItemRequirement struct {
 	ItemID uint16 `json:"item_id"`
 	Count  uint32 `json:"count"`
+	// OwnershipOnly keeps qualifying items, such as Nian outfits, out of the debit plan.
+	OwnershipOnly bool `json:"ownership_only,omitempty"`
 }
 
 // CompetitiveBossItemOption is one AND-set of requirements. Options are ORed
@@ -407,8 +409,8 @@ var (
 	greatNianBoss = itemBoss("great_nian", "大年兽", bossEntity(rolecatalog.RoleLargeNianBeast, 10, CompetitiveBossSkillsGenericSlowGlueTransform), bossOverlay(),
 		itemOption(
 			CompetitiveBossItemRequirement{ItemID: 437, Count: 1},
-			CompetitiveBossItemRequirement{ItemID: 433, Count: 1},
-			CompetitiveBossItemRequirement{ItemID: 431, Count: 1},
+			CompetitiveBossItemRequirement{ItemID: 433, Count: 1, OwnershipOnly: true},
+			CompetitiveBossItemRequirement{ItemID: 431, Count: 1, OwnershipOnly: true},
 		),
 	)
 	cristianoBoss = itemBoss("cristiano", "小小罗", bossEntity(rolecatalog.RoleCristiano, 5, CompetitiveBossSkillsKickBombTwoScript), bossOverlay(),

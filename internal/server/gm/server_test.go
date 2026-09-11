@@ -102,6 +102,13 @@ func TestGMAccountInventorySearchAndNativeIcon(t *testing.T) {
 		t.Fatalf("empty nickname status = %d: %s", missingNickname.StatusCode, readBody(t, missingNickname))
 	}
 	missingNickname.Body.Close()
+	longNickname := requestJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/gm/api/accounts", `{"uin":3,"nickname":"一二三四五六七八九十","gender":1,"password":"123456"}`)
+	if longNickname.StatusCode != http.StatusBadRequest {
+		t.Fatalf("long nickname status = %d: %s", longNickname.StatusCode, readBody(t, longNickname))
+	}
+	if body := readBody(t, longNickname); !strings.Contains(body, "16 个 GBK 字节") {
+		t.Fatalf("missing nickname length explanation: %s", body)
+	}
 	created := requestJSON(t, httpServer.Client(), http.MethodPost, httpServer.URL+"/gm/api/accounts", `{"uin":3,"nickname":"糖三","gender":1,"password":"123456"}`)
 	if created.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d: %s", created.StatusCode, readBody(t, created))
@@ -463,7 +470,7 @@ func TestGMWebCancelButtonsAndInventoryOnlyGrant(t *testing.T) {
 	if !strings.Contains(html, `id="cancel-create" type="button"`) || !strings.Contains(script, `$("cancel-create").addEventListener("click"`) {
 		t.Fatal("create-account cancel button is not wired as a non-submit close action")
 	}
-	if !strings.Contains(html, `id="create-nickname" maxlength="20" placeholder="请输入昵称" required`) {
+	if !strings.Contains(html, `id="create-nickname" maxlength="16" placeholder="请输入昵称" required`) {
 		t.Fatal("create-account nickname is not required")
 	}
 	if !strings.Contains(html, `QQ糖币<input id="profile-money"`) || strings.Contains(html, `>游戏币<input id="profile-money"`) {

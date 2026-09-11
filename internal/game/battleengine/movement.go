@@ -547,22 +547,34 @@ func (engine *Engine) positionWalkable(actor *Actor, position Position, directio
 	if !ok {
 		return false
 	}
-	walkable := true
-	touchedTypeOne := false
+	// FUN_005b7999 checks both cells for bounds before short-circuiting in
+	// native corner order. A type-1 corner can bypass the other original
+	// corner only after BOTH forward cells pass the recursive check.
 	for _, collision := range collisions {
-		collisionCell, collisionType := collision.cell, collision.kind
-		if collisionType == nativeCollisionNone {
-			continue
-		}
-		if collisionType == nativeCollisionDynamicTypeOne && actor.NativePassActive && engine.nativeCellBeyondPassable(actor, collisionCell, direction) {
-			continue
-		}
-		walkable = false
-		if collisionType == nativeCollisionDynamicTypeOne && !actor.NativePassActive {
-			touchedTypeOne = true
+		if _, inside := engine.grid.Cell(collision.cell); !inside {
+			return false
 		}
 	}
-	if touchedTypeOne {
+	order := [2]int{0, 1}
+	if direction == DirectionRight || direction == DirectionUp {
+		order = [2]int{1, 0}
+	}
+	for _, index := range order {
+		collision := collisions[index]
+		if collision.kind == nativeCollisionNone {
+			continue
+		}
+		if collision.kind != nativeCollisionDynamicTypeOne {
+			return false
+		}
+		if actor.NativePassActive {
+			for _, candidate := range collisions {
+				if !engine.nativeCellBeyondPassable(actor, candidate.cell, direction) {
+					return false
+				}
+			}
+			return true
+		}
 		// FUN_005b7999 does not touch only the corner that classified as a
 		// type-1 object. Its inactive branch calls FUN_005d335c for both native
 		// leading cells, in the order emitted by FUN_005b7d1b. When the two
@@ -573,8 +585,9 @@ func (engine *Engine) positionWalkable(actor *Actor, position Position, directio
 		for _, cell := range nativePassTouchOrder(collisions, direction) {
 			engine.recordNativePassCollision(actor, cell)
 		}
+		return false
 	}
-	return walkable
+	return true
 }
 
 // movementSegmentWalkable preserves the native collision boundary when the
@@ -583,8 +596,8 @@ func (engine *Engine) positionWalkable(actor *Actor, position Position, directio
 // a bubble to four or more pixels inside it, bypassing the type-1 collision
 // predicate without ever activating NativePass. Client.exe reaches the same
 // boundary through its higher-frequency render integration; the restricted
-// engine therefore sweeps every integer pixel while retaining the native
-// all-or-nothing displacement and corner-correction result for the update.
+// engine therefore sweeps inactive dynamic entry strips while retaining the
+// native whole-endpoint check for static geometry and activated passage.
 func (engine *Engine) movementSegmentWalkable(actor *Actor, start Position, direction Direction, distance int) bool {
 	_, blocked := engine.nativeMovementSegmentCollision(actor, start, direction, distance)
 	return !blocked
@@ -604,6 +617,22 @@ func (engine *Engine) nativeMovementSegmentCollision(actor *Actor, start Positio
 		candidate := Position{
 			X: start.X + dx*int32(partial),
 			Y: start.Y + dy*int32(partial),
+		}
+		// FUN_005cfc10 checks static geometry at the whole-step endpoint.
+		// Intermediate static checks incorrectly reject movement out of a wall
+		// and change the native perpendicular corner classification.
+		if partial != distance {
+			// Active passage uses FUN_005cfc10's whole endpoint. Sweeping the
+			// first pixel can still classify the actor's freshly placed bubble,
+			// whose recursive forward cell is the blocking bubble. This falsely
+			// rejects Up/Left before their endpoint reaches the other cell.
+			if actor.NativePassActive || len(engine.bombs) == 0 {
+				continue
+			}
+			_, collisions, _ := engine.nativeLeadingEdgeCollisions(actor, candidate, direction)
+			if collisions[0].kind != nativeCollisionDynamicTypeOne && collisions[1].kind != nativeCollisionDynamicTypeOne {
+				continue
+			}
 		}
 		if !engine.positionWalkable(actor, candidate, direction) {
 			return candidate, true
@@ -738,11 +767,17 @@ func (engine *Engine) nativePointCollision(actor *Actor, point Position, directi
 	cell := point.Cell()
 	tile, inside := engine.grid.Cell(cell)
 	capabilities := engine.actorCapabilities(actor, direction)
-	if !inside || (!capabilities.TraverseStaticTerrain && tile.Kind != CellOpen) {
+	if !inside {
 		return cell, nativeCollisionStatic
 	}
-	if engine.bombAt(cell) >= 0 && nativeDynamicBoundaryBlocks(point, direction) {
+	// FUN_005b7dc7 classifies type-1 objects before querying static terrain.
+	// During an active pass the whole type-1 cell drives the recursive check,
+	// including a corner already deeper than the ordinary entry boundary.
+	if engine.bombAt(cell) >= 0 && (actor.NativePassActive || nativeDynamicBoundaryBlocks(point, direction)) {
 		return cell, nativeCollisionDynamicTypeOne
+	}
+	if !capabilities.TraverseStaticTerrain && tile.Kind != CellOpen {
+		return cell, nativeCollisionStatic
 	}
 	return cell, nativeCollisionNone
 }

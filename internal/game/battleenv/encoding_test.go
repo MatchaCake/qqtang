@@ -487,6 +487,38 @@ func TestVisibleTacticalRoutesDoNotLeakHiddenOrUnreachableTargets(t *testing.T) 
 	}
 }
 
+func TestVisibleTacticalRoutesCrossPlayerPassableMapElements(t *testing.T) {
+	grid := battleengine.Grid{Width: 3, Height: 1, Cells: []battleengine.Tile{
+		{Kind: battleengine.CellOpen},
+		{Kind: battleengine.CellOpen, MapElementOccupied: true},
+		{Kind: battleengine.CellOpen},
+	}}
+	self := battleengine.ActorObservation{
+		PlayerID: 1, TeamID: 1, Cell: battleengine.Cell{},
+		Capabilities: battleengine.ActorCapabilities{CanCollectItems: true},
+	}
+	observation := battleengine.Observation{
+		PlayerID: 1, Grid: grid,
+		Actors: []battleengine.ActorObservation{self, {PlayerID: 2, TeamID: 2, Cell: battleengine.Cell{Col: 2}}},
+		Pickups: []battleengine.Pickup{{SceneID: 1, Cell: battleengine.Cell{Col: 2}, State: battleengine.PickupAvailable}},
+	}
+	routes := visibleTacticalRoutes(observation, self)
+	for _, kind := range []int{tacticalRouteEnemy, tacticalRoutePickup} {
+		if got := routes[kind]; !got.found || got.first != battleengine.DirectionRight || got.distance != 2 {
+			t.Fatalf("route through player-passable map element = %+v, want right/2", got)
+		}
+	}
+	observation.Grid.Cells[1].Kind = battleengine.CellSolid
+	if got := visibleTacticalRoutes(observation, self); got[tacticalRouteEnemy].found || got[tacticalRoutePickup].found {
+		t.Fatal("static blocking element became a traversable route")
+	}
+	observation.Grid.Cells[1].Kind = battleengine.CellOpen
+	observation.Bombs = []battleengine.Bomb{{Cell: battleengine.Cell{Col: 1}}}
+	if got := visibleTacticalRoutes(observation, self); got[tacticalRouteEnemy].found || got[tacticalRoutePickup].found {
+		t.Fatal("dynamic bubble was ignored on a player-passable map element")
+	}
+}
+
 func TestDuckTacticalRoutesTraverseStaticTerrainButIgnorePickups(t *testing.T) {
 	grid := battleengine.Grid{Width: 3, Height: 1, Cells: []battleengine.Tile{
 		{Kind: battleengine.CellOpen}, {Kind: battleengine.CellSolid}, {Kind: battleengine.CellOpen},

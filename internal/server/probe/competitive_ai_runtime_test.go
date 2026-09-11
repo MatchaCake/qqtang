@@ -1010,7 +1010,19 @@ func TestCompetitiveAIDecisionCadenceRerunsModelOnEveryImminentDangerTick(t *tes
 		if legalErr != nil {
 			t.Fatal(legalErr)
 		}
-		imminentDanger := competitiveAIImminentDanger(engine, observation)
+		// Independent full forecast verifies the scheduler's cheap early-out
+		// still responds on every existing imminent-impact frame.
+		timeline, err := engine.DangerTimeline(600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		imminentDanger := false
+		for _, actor := range observation.Actors {
+			if actor.PlayerID == observation.PlayerID {
+				impact, threatened := timeline.ImpactAt(actor.Cell)
+				imminentDanger = threatened && impact <= engine.ElapsedMS()+400
+			}
+		}
 		callsBefore := calls
 		action, chooseErr := policy.ChooseActionWithSnapshot(engine, observation, legal)
 		if chooseErr != nil {

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"golang.org/x/text/encoding/simplifiedchinese"
 	_ "modernc.org/sqlite"
 
 	"qqtang/internal/accountauth"
@@ -107,6 +108,16 @@ func (store *PlayerStore) LoadOrCreate(ctx context.Context, uin uint32, seed gam
 func (store *PlayerStore) CreateAccount(ctx context.Context, uin uint32, profile game.PlayerProfile, password string) error {
 	if uin == 0 {
 		return fmt.Errorf("player UIN must be non-zero")
+	}
+	// New accounts use the chosen 16-byte display limit, below the native
+	// 19-byte NUL-terminated maximum. This is not a wire-format restriction
+	// and must not reject existing profiles when they are loaded or saved.
+	nickname, err := simplifiedchinese.GBK.NewEncoder().Bytes([]byte(profile.Nickname))
+	if err != nil {
+		return fmt.Errorf("昵称无法编码为 GBK: %w", err)
+	}
+	if maximum := 16; len(nickname) > maximum {
+		return fmt.Errorf("昵称最多 %d 个 GBK 字节（汉字通常占 2 字节），当前为 %d 字节", maximum, len(nickname))
 	}
 	if err := profile.Validate(); err != nil {
 		return err

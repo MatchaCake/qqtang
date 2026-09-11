@@ -30,6 +30,10 @@ var tacticalReachabilityHorizonsMS = [TacticalReachabilityHorizonCount]uint32{
 // snapshot. It deliberately does not predict future opponent actions, model
 // decision cadence or replace native movement. These values are observations,
 // never evaluation outcomes or hard action masks.
+// In particular, the route approximation keeps current bubble cells blocked
+// for the whole horizon and does not expand waiting states. A missing refuge
+// is unresolved, not proof of danger: native play may wait for an old bubble
+// to disappear and then cross that cell before the newly placed one explodes.
 //
 // Every area is normalized by the public map cell count. Enemy aggregates are
 // additionally averaged across active enemies. This keeps the meaning stable
@@ -517,8 +521,8 @@ func (engine *Engine) tacticalSafeReachabilityFromActor(
 // tacticalStraightSegmentWalkable is equivalent to movementSegmentWalkable
 // for one straight segment but samples only points where the native collision
 // classification can change: the first displaced pixel, every leading-edge
-// cell boundary, and the endpoint. Static collision is constant inside a cell;
-// type-1 bomb collision is active only at those entry boundaries.
+// cell boundary, and the endpoint. Intermediate checks apply only to type-1
+// objects without active passage; otherwise use the whole-update endpoint.
 func (engine *Engine) tacticalStraightSegmentWalkable(actor *Actor, start Position, direction Direction, distance int) bool {
 	if actor == nil || distance <= 0 {
 		return false
@@ -544,6 +548,15 @@ func (engine *Engine) tacticalStraightSegmentWalkable(actor *Actor, start Positi
 		candidate := Position{
 			X: start.X + dx*int32(partial),
 			Y: start.Y + dy*int32(partial),
+		}
+		if partial != distance {
+			if actor.NativePassActive || len(engine.bombs) == 0 {
+				return true
+			}
+			_, collisions, _ := engine.nativeLeadingEdgeCollisions(actor, candidate, direction)
+			if collisions[0].kind != nativeCollisionDynamicTypeOne && collisions[1].kind != nativeCollisionDynamicTypeOne {
+				return true
+			}
 		}
 		return engine.positionWalkable(actor, candidate, direction)
 	}

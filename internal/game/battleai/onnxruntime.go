@@ -4,11 +4,14 @@ package battleai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	ort "github.com/microsoft/onnxruntime/go/onnxruntime"
 )
@@ -102,7 +105,7 @@ func initializeONNXRuntime(sharedLibraryPath string) error {
 	}
 	ort.SetSharedLibraryPath(absolute)
 	if err := ort.Init(); err != nil {
-		return fmt.Errorf("initialize ONNX Runtime from %s: %w", absolute, err)
+		return onnxRuntimeInitializationError(absolute, err)
 	}
 	if apiVersion := ort.APIVersion(); apiVersion < minimumONNXRuntimeAPIVersion {
 		return fmt.Errorf(
@@ -120,6 +123,19 @@ func initializeONNXRuntime(sharedLibraryPath string) error {
 	}
 	onnxRuntimePath = absolute
 	return nil
+}
+
+func onnxRuntimeInitializationError(path string, err error) error {
+	wrapped := fmt.Errorf("initialize ONNX Runtime from %s: %w", path, err)
+	if runtime.GOOS == "windows" &&
+		(errors.Is(err, syscall.Errno(1114)) || errors.Is(err, syscall.Errno(126))) {
+		download := "https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"
+		if runtime.GOARCH == "amd64" {
+			download = "https://aka.ms/vc14/vc_redist.x64.exe"
+		}
+		return fmt.Errorf("%w; Windows could not initialize the library or one of its dependencies; verify the complete runtime files and install/repair Microsoft Visual C++ Redistributable for %s (%s), then restart the server", wrapped, runtime.GOARCH, download)
+	}
+	return wrapped
 }
 
 func supportedONNXRuntimeVersion(version string) bool {

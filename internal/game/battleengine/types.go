@@ -659,12 +659,27 @@ const (
 	EventPickupDispatched
 )
 
+// EliminationCause separates finishing contact from an expiring trap. A native
+// death reconciliation does not always identify its cause and remains unknown.
+type EliminationCause uint8
+
+const (
+	EliminationUnknown EliminationCause = iota
+	EliminationContact
+	EliminationTrapDeath
+)
+
 type Event struct {
 	Kind     EventKind
 	TimeMS   uint32
 	PlayerID uint16
 	TargetID uint16
 	BombID   uint32
+	// Elimination metadata preserves the actual trapping source separately
+	// from PlayerID (the final killer). A victim's own bubble is not attributed
+	// to a nearby opponent or to the player who later finishes the victim.
+	TrappedByPlayerID uint16
+	EliminationCause  EliminationCause
 	// TriggeredByBombID is populated only for EventBombExploded. It names the
 	// immediately preceding bomb in the authoritative chain; following these
 	// links reaches every actual chain ancestor without treating simultaneous

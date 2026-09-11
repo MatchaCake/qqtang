@@ -4,11 +4,73 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"qqtang/internal/accountauth"
 	"qqtang/internal/protocol/game"
 )
+
+func TestAccountCreationNicknameGBKLimit(t *testing.T) {
+	store, err := OpenPlayerStore(filepath.Join(t.TempDir(), "players.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for index, test := range []struct {
+		nickname string
+		accepted bool
+	}{
+		{strings.Repeat("a", 16), true},
+		{strings.Repeat("a", 17), false},
+		{strings.Repeat("a", 20), false},
+		{strings.Repeat("糖", 8), true},
+		{strings.Repeat("糖", 9), false},
+		{strings.Repeat("糖", 10), false},
+		{strings.Repeat("糖", 7) + "ab", true},
+		{strings.Repeat("糖", 8) + "a", false},
+	} {
+		t.Run(test.nickname, func(t *testing.T) {
+			uin := uint32(1000001 + index)
+			profile := game.DefaultPlayerProfile()
+			profile.Nickname = test.nickname
+			err := store.CreateAccount(t.Context(), uin, profile, accountauth.DefaultPassword)
+			if test.accepted {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "16 个 GBK 字节") {
+				t.Fatalf("expected nickname length error, got %v", err)
+			}
+			if _, err := store.Load(t.Context(), uin); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("rejected creation persisted profile: %v", err)
+			}
+			if exists, err := store.HasPassword(t.Context(), uin); err != nil || exists {
+				t.Fatalf("rejected creation persisted credentials: %v, %v", exists, err)
+			}
+		})
+	}
+}
+
+func TestAccountCreationLimitPreservesExistingLongNickname(t *testing.T) {
+	store, err := OpenPlayerStore(filepath.Join(t.TempDir(), "players.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	profile := game.DefaultPlayerProfile()
+	profile.Nickname = strings.Repeat("糖", 10)
+	// Save a legacy profile without going through the new-account entry point.
+	if err := store.Save(t.Context(), 1000001, profile); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadOrCreate(t.Context(), 1000001, game.DefaultPlayerProfile())
+	if err != nil || loaded.Nickname != profile.Nickname {
+		t.Fatalf("existing nickname changed or became unreadable: %q, %v", loaded.Nickname, err)
+	}
+}
 
 func TestAccountCreationConflictPreservesProfileInventoryAndPassword(t *testing.T) {
 	store, err := OpenPlayerStore(filepath.Join(t.TempDir(), "players.sqlite"))

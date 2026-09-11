@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -274,7 +275,10 @@ func LoadConfig(path string) (Config, error) {
 				config.CompetitiveAI.MetadataPath = resolveAIPath(config.CompetitiveAI.MetadataPath)
 			}
 			if strings.TrimSpace(config.CompetitiveAI.SharedLibraryPath) == "" {
-				return Config{}, fmt.Errorf("competitive_ai.shared_library_path is required for ONNX Runtime")
+				config.CompetitiveAI.SharedLibraryPath, err = bundledONNXRuntimePath(runtime.GOOS, runtime.GOARCH)
+				if err != nil {
+					return Config{}, err
+				}
 			}
 			config.CompetitiveAI.SharedLibraryPath = resolveAIPath(config.CompetitiveAI.SharedLibraryPath)
 		}

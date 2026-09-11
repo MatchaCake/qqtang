@@ -130,7 +130,7 @@
     <form id="create-form" method="dialog" class="dialog-card">
       <div><p class="eyebrow">New Account</p><h2>创建本地账号</h2></div>
       <label>QQ号码<input id="create-uin" type="number" min="1" max="4294967295" value="1000003" required></label>
-      <label>昵称<input id="create-nickname" maxlength="20" placeholder="请输入昵称" required></label>
+      <label>昵称<input id="create-nickname" maxlength="16" placeholder="请输入昵称" required><small>最多16个 GBK 字节（8个汉字或16个英文字母），对局昵称栏可能裁剪显示</small></label>
       <label>性别<select id="create-gender"><option value="0">女性</option><option value="1">男性</option></select></label>
       <label>初始密码
         <span class="password-control"><input id="create-password" type="password" minlength="6" maxlength="16" pattern="[!-~]{6,16}" autocomplete="new-password" value="123456" required><button id="toggle-create-password" type="button" class="secondary compact">显示</button></span>

@@ -2,8 +2,9 @@ package battleengine
 
 import "testing"
 
-// Self-elimination attribution describes the fatal flame's owner, not who
-// initiated a chain or whether the victim's decisions were avoidable mistakes.
+// Natural self-elimination attribution describes the fatal flame's owner,
+// not who initiated a chain or whether the victim made an avoidable mistake.
+// A later contact finish has a different killer; its trapper is recorded separately.
 func TestEnemyTriggeredOwnBombRetainsSelfEliminationAttribution(t *testing.T) {
 	config := testConfig()
 	config.Grid = testOpenGrid(5, 3)

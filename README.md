@@ -4,6 +4,8 @@
 
 ## 普通玩家
 
+注：较旧的 Windows 或未安装运行库的 Windows Server 启动时，可能提示 `onnxruntime error` 或 DLL 初始化失败。请安装 [Microsoft Visual C++ x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe)，安装完成后重新启动服务端。
+
 完整解压 `QQTang-Local` 后双击 `QQTang-Launcher.exe`，启动本机服务端和客户端。默认账号为 `1000001`，初始密码为 `123456`；请勿输入真实 QQ 密码。重复点击“启动一个客户端”即可多开，启动器不设置固定客户端数量上限。
 
 ## TP 已完全移除

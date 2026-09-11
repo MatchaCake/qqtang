@@ -677,7 +677,7 @@ foreach ($architecture in @('amd64', 'arm64')) {
 	$linuxServerConfig.competitive_ai.backend = 'onnxruntime'
 	$linuxServerConfig.competitive_ai.model_path = 'models/qqtang-rule1.onnx'
 	$linuxServerConfig.competitive_ai | Add-Member -NotePropertyName metadata_path -NotePropertyValue 'models/qqtang-rule1.onnx.json' -Force
-	$linuxServerConfig.competitive_ai.shared_library_path = "../runtime/onnxruntime/linux-$architecture/libonnxruntime.so.1.29.0"
+	$linuxServerConfig.competitive_ai.shared_library_path = ''
 	$linuxServerConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $target "configs\server-directory-local-ui-linux-$architecture.json") -Encoding utf8
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $target 'configs\models') | Out-Null

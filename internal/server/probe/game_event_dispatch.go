@@ -824,6 +824,7 @@ func (server *Server) handleGameEventMessage(config ListenerConfig, session *con
 										startFollowUp, startFollowUpResult, competitiveRoomSettlement, relayErr = server.competitiveKillConclusion(
 											session, data, interaction.ClientTime, battle, resolution,
 										)
+										startFollowUpDelay = competitiveNativeConclusionDelay
 										completeCompetitiveAfterSend = competitiveRoomSettlement != nil
 									}
 								}
@@ -895,6 +896,10 @@ func (server *Server) handleGameEventMessage(config ListenerConfig, session *con
 									startFollowUp, startFollowUpResult, competitiveRoomSettlement, relayErr = server.competitiveKillConclusion(
 										session, data, killed.ClientTime, battle, resolution,
 									)
+									// The reliable ACK can arrive before the native Type-2
+									// collision/death presentation has finished. Keep the
+									// same grace as 0x0FA7 before GAME_OVER clears the room.
+									startFollowUpDelay = competitiveNativeConclusionDelay
 									completeCompetitiveAfterSend = competitiveRoomSettlement != nil
 								}
 							}

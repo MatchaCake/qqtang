@@ -31,7 +31,7 @@ type Input struct {
 	Move         battleengine.Direction
 	MoveEnd      battleengine.Position
 	BombCell     battleengine.Cell
-	BombPower    uint16
+	BombPower    uint16 // Internal arm reach; native PLAYER_USE_BOMB encodes reach + 1.
 	BombProperty byte
 	SceneID      uint32
 	UseActionID  uint8
@@ -94,10 +94,16 @@ func BuildTimeline(recording qbv.Recording) (Timeline, error) {
 				})
 			}
 		case qbv.NativeEventBombPlaced:
+			// Match the live transport boundary in Runtime.AcceptHumanBombPlacement.
+			// Passing the native wire value straight to the engine adds one cell
+			// to every blast arm and can falsely trap recorded survivors.
+			if event.BombPlaced.Power <= 1 || event.BombPlaced.Power > 0x100 {
+				return Timeline{}, fmt.Errorf("QBV event %d player %d: invalid native wire bomb power %d", event.Index, event.BombPlaced.PlayerID, event.BombPlaced.Power)
+			}
 			timeline.Inputs = append(timeline.Inputs, Input{
 				TimeMS: event.Record.TimeMS, RecordIndex: event.Index, Kind: InputPlaceBomb, PlayerID: event.BombPlaced.PlayerID,
 				BombCell:  battleengine.Cell{Row: int16(event.BombPlaced.Row), Col: int16(event.BombPlaced.Column)},
-				BombPower: event.BombPlaced.Power, BombProperty: event.BombPlaced.Property,
+				BombPower: event.BombPlaced.Power - 1, BombProperty: event.BombPlaced.Property,
 			})
 		case qbv.NativeEventItem:
 			// Local QBV stores the outgoing 0x0FAC and the arbitrator's 0x0FAD

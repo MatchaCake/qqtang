@@ -231,7 +231,7 @@ func (policy *competitiveAIDecisionCadencePolicy) choose(snapshot *battleengine.
 	held.UseActionID = 0
 	canReuse := policy.initialized && policy.remainingSteps > 0 &&
 		competitiveAIActionAllowed(legal, held) &&
-		!competitiveAIImminentDanger(snapshot, observation)
+		(snapshot == nil || !snapshot.NeedsImmediatePolicyDecision(observation.PlayerID))
 	if canReuse {
 		policy.remainingSteps--
 		return held, nil
@@ -335,29 +335,6 @@ func competitiveAIActionAllowed(legal []battleengine.Action, action battleengine
 		}
 	}
 	return false
-}
-
-func competitiveAIImminentDanger(snapshot *battleengine.Engine, observation battleengine.Observation) bool {
-	if snapshot == nil {
-		return false
-	}
-	var cell battleengine.Cell
-	found := false
-	for _, actor := range observation.Actors {
-		if actor.PlayerID == observation.PlayerID {
-			cell, found = actor.Cell, true
-			break
-		}
-	}
-	if !found {
-		return false
-	}
-	timeline, err := snapshot.DangerTimeline(600)
-	if err != nil {
-		return false
-	}
-	impact, threatened := timeline.ImpactAt(cell)
-	return threatened && impact <= snapshot.ElapsedMS()+400
 }
 
 func competitiveAILivePolicy(base battleengine.Policy, decisionSteps, initialWaitSteps uint32) battleengine.Policy {
@@ -1326,7 +1303,7 @@ func (runtime *liveCompetitiveAIRuntime) projectMovement(
 }
 
 // A fixed engine step applies its selected key over [before, after]. Publish
-// an ordinary input change at that interval's start, where the actor actually
+// ordinary movement at that interval's start, where the actor actually
 // turns. Publishing only its post-step position omits the first 20 ms of the
 // new path: FUN_005d0b81 then snaps or backtracks from the old extrapolated path.
 // Native producers can flush a key change on a zero-delta update (the QBV human
@@ -1347,15 +1324,14 @@ func competitiveAIMovementFrameSamples(
 		return projection, nil, nil
 	}
 	moving, direction := competitiveAINativeMovementIntent(action, current)
-	changed := moving != projection.moving || (moving && direction != projection.direction)
 	var moves []game.PlayerMoveSequence
-	if changed && before != nil && projection.initialized && !forced &&
-		projection.lastSentAt < before.ElapsedMS() && action.UseActionID == 0 {
+	if before != nil && !forced &&
+		(!projection.initialized || projection.lastSentAt < before.ElapsedMS()) && action.UseActionID == 0 {
 		previous, previousOK := actorByID(before.Actors(), playerID)
 		beforeSpeed, _ := before.NativeEffectiveSpeedRate(playerID, direction)
 		afterSpeed, _ := after.NativeEffectiveSpeedRate(playerID, direction)
 		// Attribute/status transitions belong to the post-event checkpoint,
-		// whereas ordinary held-key changes have an unambiguous input boundary.
+		// whereas ordinary movement has an unambiguous input boundary.
 		if previousOK && previous.State == battleengine.ActorActive && current.State == battleengine.ActorActive &&
 			previous.MovementStatus == current.MovementStatus && previous.TransformationSceneID == current.TransformationSceneID &&
 			beforeSpeed == afterSpeed {
@@ -1369,6 +1345,11 @@ func competitiveAIMovementFrameSamples(
 			if emitted {
 				moves = append(moves, move)
 			}
+			// Heartbeats and collision-path updates use the same frame origin.
+			// Publishing another ordinary checkpoint at `after` would consume
+			// the next frame's turn timestamp; native queues reject two different
+			// paths at the same timestamp, recreating the 20 ms reversal jump.
+			return projection, moves, nil
 		}
 	}
 	projection, move, emitted, err := competitiveAIMovementSampleWithIntent(after, current, moving, direction, projection, forced)

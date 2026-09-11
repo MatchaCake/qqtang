@@ -74,6 +74,34 @@ func TestCompetitiveAITurnPreservesForcedAndAlreadySentCheckpoints(t *testing.T)
 	}
 }
 
+func TestCompetitiveAIHeartbeatLeavesNextTurnOriginAvailable(t *testing.T) {
+	engine, projection := turnTestEngine(t, battleengine.DirectionRight)
+	// Reproduce the QBV pattern: an ordinary heartbeat immediately followed
+	// by a reversal on the next 20 ms tick. The heartbeat must not occupy the
+	// timestamp at which the next input starts.
+	projection.lastSentAt = engine.ElapsedMS() - competitiveAIMovementHeartbeatMS
+	before := engine.Clone()
+	held := battleengine.Action{PlayerID: 20001, Move: battleengine.DirectionRight}
+	if _, err := engine.Step([]battleengine.Action{held}); err != nil {
+		t.Fatal(err)
+	}
+	projection, moves, err := competitiveAIMovementFrameSamples(before, engine, 20001, held, projection, false)
+	if err != nil || len(moves) != 1 || moves[0].TimeStamp != before.ElapsedMS() {
+		t.Fatalf("heartbeat must use its frame origin: moves=%+v err=%v", moves, err)
+	}
+	before = engine.Clone()
+	origin, _ := actorByID(before.Actors(), 20001)
+	reverse := battleengine.Action{PlayerID: 20001, Move: battleengine.DirectionLeft}
+	if _, err := engine.Step([]battleengine.Action{reverse}); err != nil {
+		t.Fatal(err)
+	}
+	_, moves, err = competitiveAIMovementFrameSamples(before, engine, 20001, reverse, projection, false)
+	if err != nil || len(moves) != 1 || moves[0].TimeStamp != before.ElapsedMS() ||
+		moves[0].CurrentPosX != uint16(origin.Position.X) || moves[0].CurrentPosY != uint16(origin.Position.Y) {
+		t.Fatalf("reversal lost its origin: moves=%+v origin=%+v time=%d err=%v", moves, origin.Position, before.ElapsedMS(), err)
+	}
+}
+
 func turnTestEngine(t *testing.T, held battleengine.Direction) (*battleengine.Engine, liveCompetitiveAIMovementProjection) {
 	t.Helper()
 	human, err := battleengine.ParticipantFromNativeRole(1, 9, 1, battleengine.ParticipantHuman)

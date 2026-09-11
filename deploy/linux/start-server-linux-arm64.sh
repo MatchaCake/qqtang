@@ -25,11 +25,7 @@ if [ ! -f "$CONFIG" ]; then
     echo "Please extract the complete QQTang-Local release package." >&2
     exit 1
 fi
-if [ ! -f "$ONNX_RUNTIME_DIR/libonnxruntime.so.1.29.0" ]; then
-    echo "Missing ONNX Runtime shared library: $ONNX_RUNTIME_DIR/libonnxruntime.so.1.29.0" >&2
-    echo "Please extract the complete QQTang-Local release package." >&2
-    exit 1
-fi
+
 
 mkdir -p runtime/data runtime/logs runtime/captures
 chmod +x "$SERVER"

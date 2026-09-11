@@ -52,7 +52,7 @@ func (engine *Engine) resolveActorContacts() []Event {
 				target.TrapExpiresAt = 0
 				events = append(events, Event{Kind: EventActorRescued, TimeMS: engine.elapsedMS, PlayerID: actor.PlayerID, TargetID: target.PlayerID, Cell: target.Position.Cell(), Position: target.Position})
 			} else {
-				events = append(events, engine.eliminateActor(targetIndex, actor.PlayerID)...)
+				events = append(events, engine.eliminateActor(targetIndex, actor.PlayerID, EliminationContact)...)
 			}
 		}
 	}
@@ -309,7 +309,7 @@ func (engine *Engine) expireTraps() []Event {
 	for index := range engine.actors {
 		actor := &engine.actors[index]
 		if actor.State == ActorTrapped && actor.TrapExpiresAt != 0 && actor.TrapExpiresAt <= engine.elapsedMS {
-			events = append(events, engine.eliminateActor(index, actor.TrappedBy)...)
+			events = append(events, engine.eliminateActor(index, actor.TrappedBy, EliminationTrapDeath)...)
 			// Live clients confirm syrup deaths one message at a time and the
 			// authoritative runtime evaluates the winner after every confirmation.
 			// Preserve that ordering in fixed-step simulations as well: batching all
@@ -345,7 +345,7 @@ func (engine *Engine) ConfirmTrappedDeath(playerID uint16) ([]Event, error) {
 	if actor.State != ActorTrapped {
 		return nil, fmt.Errorf("battle trapped-death player %d has state %d, want trapped", playerID, actor.State)
 	}
-	events := engine.eliminateActor(index, actor.TrappedBy)
+	events := engine.eliminateActor(index, actor.TrappedBy, EliminationTrapDeath)
 	if event, ended := engine.evaluateTerminal(); ended {
 		events = append(events, event)
 	}
@@ -379,20 +379,21 @@ func (engine *Engine) ApplyVerifiedElimination(playerID, killerID uint16, drops 
 	if err := engine.validateVerifiedDeathDrops(drops); err != nil {
 		return nil, err
 	}
-	events := engine.eliminateActorWithDrops(index, killerID, drops)
+	events := engine.eliminateActorWithDrops(index, killerID, drops, EliminationUnknown)
 	if event, ended := engine.evaluateTerminal(); ended {
 		events = append(events, event)
 	}
 	return events, nil
 }
 
-func (engine *Engine) eliminateActor(actorIndex int, killerID uint16) []Event {
-	return engine.eliminateActorWithDrops(actorIndex, killerID, nil)
+func (engine *Engine) eliminateActor(actorIndex int, killerID uint16, cause EliminationCause) []Event {
+	return engine.eliminateActorWithDrops(actorIndex, killerID, nil, cause)
 }
 
-func (engine *Engine) eliminateActorWithDrops(actorIndex int, killerID uint16, verifiedDrops []Pickup) []Event {
+func (engine *Engine) eliminateActorWithDrops(actorIndex int, killerID uint16, verifiedDrops []Pickup, cause EliminationCause) []Event {
 	actor := &engine.actors[actorIndex]
 	trappingBombID := actor.TrappedByBombID
+	trappingPlayerID := actor.TrappedBy
 	if definition, ok := sceneelement.NativeTransformation(sceneelement.ID(actor.TransformationSceneID)); ok && definition.GrantedActionID != 0 {
 		removeHeldAction(actor, definition.GrantedActionID)
 	}
@@ -417,6 +418,6 @@ func (engine *Engine) eliminateActorWithDrops(actorIndex int, killerID uint16, v
 	actor.HarmProtectionExpiresAt = 0
 	actor.MovementStatus = MovementStatusNone
 	actor.MovementStatusExpiresAt = 0
-	events = append(events, Event{Kind: EventActorEliminated, TimeMS: engine.elapsedMS, PlayerID: killerID, TargetID: actor.PlayerID, BombID: trappingBombID, Cell: actor.Position.Cell(), Position: actor.Position, TeamID: actor.TeamID})
+	events = append(events, Event{Kind: EventActorEliminated, TimeMS: engine.elapsedMS, PlayerID: killerID, TargetID: actor.PlayerID, BombID: trappingBombID, TrappedByPlayerID: trappingPlayerID, EliminationCause: cause, Cell: actor.Position.Cell(), Position: actor.Position, TeamID: actor.TeamID})
 	return events
 }

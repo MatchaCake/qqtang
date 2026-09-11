@@ -47,13 +47,21 @@
       { "item_id": 450, "item_count": 1 },
       { "item_id": 451, "item_count": 1, "chance_percent": 45 },
       { "item_id": 452, "item_count": 1, "chance_percent": 45 },
-      { "item_id": 458, "item_count": 1, "chance_percent": 30 }
+      { "item_id": 458, "item_count": 1, "chance_percent": 30 },
+      { "item_id": 81, "item_count": 5 },
+      { "item_id": 86, "item_count": 3 },
+      { "item_id": 82, "item_count": 2 },
+      { "item_id": 87, "item_count": 1 }
     ],
     "first_mate": [
       { "item_id": 453, "item_count": 1 },
       { "item_id": 451, "item_count": 1, "chance_percent": 50 },
       { "item_id": 452, "item_count": 1, "chance_percent": 50 },
-      { "item_id": 458, "item_count": 1, "chance_percent": 35 }
+      { "item_id": 458, "item_count": 1, "chance_percent": 35 },
+      { "item_id": 81, "item_count": 8 },
+      { "item_id": 86, "item_count": 5 },
+      { "item_id": 82, "item_count": 3 },
+      { "item_id": 87, "item_count": 2 }
     ],
     "hook": [
       { "item_id": 81, "item_count": 10 },
@@ -63,41 +71,69 @@
     ],
     "thief_griffin": [
       { "item_id": 403, "item_count": 1 },
-      { "item_id": 408, "item_count": 1, "chance_percent": 30 }
+      { "item_id": 408, "item_count": 1, "chance_percent": 30 },
+      { "item_id": 81, "item_count": 5 },
+      { "item_id": 86, "item_count": 3 },
+      { "item_id": 82, "item_count": 2 },
+      { "item_id": 87, "item_count": 1 }
     ],
     "christmas_griffin": [
       { "item_id": 435, "item_count": 1 },
       { "item_id": 406, "item_count": 1, "chance_percent": 75 },
       { "item_id": 404, "item_count": 1, "chance_percent": 40 },
-      { "item_id": 405, "item_count": 1, "chance_percent": 40 }
+      { "item_id": 405, "item_count": 1, "chance_percent": 40 },
+      { "item_id": 81, "item_count": 8 },
+      { "item_id": 86, "item_count": 5 },
+      { "item_id": 82, "item_count": 3 },
+      { "item_id": 87, "item_count": 2 }
     ],
     "ghost_griffin": [
       { "item_id": 430, "item_count": 1, "chance_percent": 35 },
       { "item_id": 432, "item_count": 1, "chance_percent": 35 },
-      { "item_id": 434, "item_count": 1, "chance_percent": 35 }
+      { "item_id": 434, "item_count": 1, "chance_percent": 35 },
+      { "item_id": 81, "item_count": 10 },
+      { "item_id": 86, "item_count": 8 },
+      { "item_id": 82, "item_count": 5 },
+      { "item_id": 87, "item_count": 3 }
     ],
     "little_nian": [
       { "item_id": 437, "item_count": 1 },
       { "item_id": 433, "item_count": 1, "chance_percent": 60 },
-      { "item_id": 431, "item_count": 1, "chance_percent": 30 }
+      { "item_id": 431, "item_count": 1, "chance_percent": 30 },
+      { "item_id": 81, "item_count": 5 },
+      { "item_id": 86, "item_count": 3 },
+      { "item_id": 82, "item_count": 2 },
+      { "item_id": 87, "item_count": 1 }
     ],
     "great_nian": [
       { "item_id": 438, "item_count": 1, "chance_percent": 40 },
       { "item_id": 440, "item_count": 1, "chance_percent": 40 },
-      { "item_id": 439, "item_count": 1, "chance_percent": 15 }
+      { "item_id": 439, "item_count": 1, "chance_percent": 15 },
+      { "item_id": 81, "item_count": 10 },
+      { "item_id": 86, "item_count": 8 },
+      { "item_id": 82, "item_count": 5 },
+      { "item_id": 87, "item_count": 3 }
     ],
     "cristiano": [
       { "item_id": 469, "item_count": 1 },
       { "item_id": 463, "item_count": 1, "chance_percent": 75 },
       { "item_id": 461, "item_count": 1, "chance_percent": 60 },
       { "item_id": 466, "item_count": 1, "chance_percent": 35 },
-      { "item_id": 467, "item_count": 1, "chance_percent": 10 }
+      { "item_id": 467, "item_count": 1, "chance_percent": 10 },
+      { "item_id": 81, "item_count": 5 },
+      { "item_id": 86, "item_count": 3 },
+      { "item_id": 82, "item_count": 2 },
+      { "item_id": 87, "item_count": 1 }
     ],
     "rooney": [
       { "item_id": 465, "item_count": 1, "chance_percent": 50 },
       { "item_id": 466, "item_count": 1, "chance_percent": 35 },
       { "item_id": 462, "item_count": 1, "chance_percent": 30 },
-      { "item_id": 468, "item_count": 1, "chance_percent": 8 }
+      { "item_id": 468, "item_count": 1, "chance_percent": 8 },
+      { "item_id": 81, "item_count": 10 },
+      { "item_id": 86, "item_count": 8 },
+      { "item_id": 82, "item_count": 5 },
+      { "item_id": 87, "item_count": 3 }
     ]
   },
   "max_packet_bytes": 1048576,
@@ -106,7 +142,7 @@
     "enabled": true,
     "backend": "onnxruntime",
     "model_path": "models/qqtang-rule1.onnx",
-    "shared_library_path": "../runtime/onnxruntime/windows-amd64/onnxruntime.dll",
+    "shared_library_path": "",
     "intra_op_threads": 1,
     "inter_op_threads": 1,
     "tick_ms": 100,

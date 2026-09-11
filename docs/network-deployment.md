@@ -21,6 +21,10 @@ ARM64 使用对应的 ARM64 脚本。脚本在前台运行，按 `Ctrl+C` 停止
 
 部署时保留包内的 `configs`、`data`、`runtime/client-patched` 和对应架构的 ONNX Runtime。服务端需要读取客户端静态配置，不能只复制单个可执行文件。
 
+AI 启用且 `competitive_ai.backend` 为 `onnxruntime` 时，服务端在启动阶段加载一次运行库并共享推理会话。关闭 AI 或使用 `native` 后端时不加载 ONNX Runtime。`shared_library_path` 留空会按运行平台和架构选择包内运行库：Windows 使用 `.dll`，Linux 使用 `.so`；显式路径相对于服务端配置文件解析。
+
+Windows 需要安装匹配服务端架构的 [Microsoft Visual C++ 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。AMD64 服务端使用 x64 版本。遇到 `DLL initialization routine failed` 时，先[下载微软官方 x64 运行库安装程序](https://aka.ms/vc14/vc_redist.x64.exe)，安装或修复后重启服务端；此错误也可能来自其他依赖初始化失败，不能仅凭错误判定系统版本不支持。若仍失败，请附上完整报错、CPU 型号和运行库版本。
+
 ## 网络配置
 
 [configs/network.json](../configs/network.json) 将服务端监听模式和客户端连接目标分开设置。

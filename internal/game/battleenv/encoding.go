@@ -39,6 +39,7 @@ const (
 	CurriculumBombEscape
 	CurriculumDevelopment
 	CurriculumLateDuelReplay
+	CurriculumNativePass
 )
 
 // TensorBatch is a channel-first, fixed-shape actor input. Layout is
@@ -65,6 +66,9 @@ type TensorBatch struct {
 	Scalars       []float32
 	Legal         []uint8
 	Active        []uint8
+	// DecisionReady is scheduler metadata, separate from life-state Active.
+	// A live actor retains recurrent memory while its held input continues.
+	DecisionReady []uint8
 }
 
 func newTensorBatch(envCount, participants, height, width int) TensorBatch {
@@ -78,6 +82,7 @@ func newTensorBatch(envCount, participants, height, width int) TensorBatch {
 		Scalars:         make([]float32, envCount*participants*ScalarFeatures),
 		Legal:           make([]uint8, envCount*participants*int(battleengine.DiscreteActionCount)),
 		Active:          make([]uint8, envCount*participants),
+		DecisionReady:   make([]uint8, envCount*participants),
 	}
 }
 
@@ -92,6 +97,7 @@ func clearTensorBatch(tensors *TensorBatch) {
 	clear(tensors.Scalars)
 	clear(tensors.Legal)
 	clear(tensors.Active)
+	clear(tensors.DecisionReady)
 }
 
 func encodeActor(tensors *TensorBatch, envIndex, actorIndex int, observation battleengine.Observation, danger battleengine.DangerTimeline, consequences battleengine.TacticalConsequences, legal battleengine.ActionMask) error {
@@ -186,8 +192,9 @@ func encodeActor(tensors *TensorBatch, envIndex, actorIndex int, observation bat
 			switch tile.Kind {
 			case battleengine.CellOpen:
 				// A native map element may occupy a collision-open grid cell.
-				// Movement and placement both reject that cell, so exposing it as
-				// ordinary open terrain contradicts the production legal mask.
+				// Channel 1 denotes unoccupied floor suitable for placement.
+				// Player movement still follows Kind and may cross an occupied
+				// CellOpen tile, matching the native GridAttr traversal bit.
 				if !tile.MapElementOccupied {
 					set(1, cell, 1)
 				}
@@ -665,7 +672,7 @@ func visibleTacticalRoutes(observation battleengine.Observation, self battleengi
 	passable := scratch.passable
 	for index, tile := range observation.Grid.Cells {
 		passable[index] = self.Capabilities.TraverseStaticTerrain ||
-			(tile.Kind == battleengine.CellOpen && !tile.MapElementOccupied) ||
+			tile.Kind == battleengine.CellOpen ||
 			tile.NormalPushable || (self.Capabilities.CanPushBreakable && tile.PandaPushable)
 	}
 	for _, bomb := range observation.Bombs {
