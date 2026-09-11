@@ -23,12 +23,16 @@ func (server *Server) handleChatMessage(session *connectionSession, connectionID
 		if session.RoomID == 0 {
 			return server.rejectedChat(connectionID, inspection.Command, fmt.Errorf("sender is not in a room"))
 		}
+		if session.Profile.Nickname == "" {
+			return server.rejectedChat(connectionID, inspection.Command, fmt.Errorf("sender UIN %d has no nickname", session.UIN))
+		}
 		response, responseErr := game.BuildLocalRoomChatResponse(data, 0)
 		if responseErr != nil {
 			return server.rejectedChat(connectionID, inspection.Command, responseErr)
 		}
 		notification := game.RoomChatNotification{
-			SourcePlayerID: session.Profile.PlayerID, DestinationPlayerID: request.DestinationPlayerID, Content: request.Content,
+			SourcePlayerID: session.Profile.PlayerID, DestinationPlayerID: request.DestinationPlayerID,
+			Nickname: session.Profile.Nickname, Content: request.Content,
 		}
 		return protocolMessageResult{
 			handled: true, response: response, result: "qqt_room_chat",

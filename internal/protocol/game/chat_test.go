@@ -25,7 +25,7 @@ func TestRoomAndSectionChatCodecs(t *testing.T) {
 		t.Fatalf("room response = %+v, %v", inspection, err)
 	}
 	roomNotification, err := BuildLocalRoomChatNotification(roomPacket, RoomChatNotification{
-		SourcePlayerID: 1, DestinationPlayerID: 2, Content: "hello",
+		SourcePlayerID: 1, DestinationPlayerID: 2, Nickname: "糖一", Content: "hello",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,8 @@ func TestRoomAndSectionChatCodecs(t *testing.T) {
 	if err != nil || roomNotificationInspection.Command != RoomChatNotifyCommand || roomNotificationInspection.RouteSequence != 0 || roomNotificationInspection.InnerSequence != 0 {
 		t.Fatalf("room notification = %+v, %v", roomNotificationInspection, err)
 	}
-	if got := roomNotificationInspection.Payload; len(got) != 11 || binary.BigEndian.Uint16(got[0:2]) != 1 || binary.BigEndian.Uint16(got[2:4]) != 2 || binary.BigEndian.Uint16(got[4:6]) != 5 || string(got[6:]) != "hello" {
+	roomWire := []byte{0xCC, 0xC7, 0xD2, 0xBB, 0xCB, 0xB5, 0x3A, 'h', 'e', 'l', 'l', 'o'}
+	if got := roomNotificationInspection.Payload; len(got) != 6+len(roomWire) || binary.BigEndian.Uint16(got[0:2]) != 1 || binary.BigEndian.Uint16(got[2:4]) != 2 || binary.BigEndian.Uint16(got[4:6]) != uint16(len(roomWire)) || string(got[6:]) != string(roomWire) {
 		t.Fatalf("room notification payload = %x", got)
 	}
 
@@ -106,5 +107,31 @@ func TestChatCodecsRejectUndeclaredTrailingContent(t *testing.T) {
 	packet := makeLocalPacketForTest(t, append(buildInnerHeaderForTest(RoomChatCommand), payload...))
 	if _, err := DecodeLocalRoomChatRequest(packet); err == nil {
 		t.Fatal("room chat accepted bytes after its declared content length")
+	}
+}
+
+func TestRoomChatNotificationKeepsSystemTextUnprefixed(t *testing.T) {
+	packet := makeLocalPacketForTest(t, append(buildInnerHeaderForTest(RoomChatCommand), make([]byte, RoomChatHeaderSize+5)...))
+	notification, err := BuildLocalRoomChatNotification(packet, RoomChatNotification{
+		SourcePlayerID: RoomChatSystemSourcePlayerID, DestinationPlayerID: 1, Content: "cannot start",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := InspectLocalPacket(notification)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inspection.Payload; binary.BigEndian.Uint16(got[0:2]) != RoomChatSystemSourcePlayerID || string(got[6:]) != "cannot start" {
+		t.Fatalf("system room notification payload = %x", got)
+	}
+}
+
+func TestRoomChatNotificationRejectsPlayerMessageWithoutNickname(t *testing.T) {
+	packet := makeLocalPacketForTest(t, append(buildInnerHeaderForTest(RoomChatCommand), make([]byte, RoomChatHeaderSize+5)...))
+	if _, err := BuildLocalRoomChatNotification(packet, RoomChatNotification{
+		SourcePlayerID: 1, DestinationPlayerID: 2, Content: "hello",
+	}); err == nil {
+		t.Fatal("player room chat accepted an empty nickname")
 	}
 }
