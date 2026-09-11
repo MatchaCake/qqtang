@@ -274,8 +274,47 @@ func (battle *CompetitiveBattle) CollectedBossItems() map[uint16]map[uint32]uint
 	}
 	battle.mu.Lock()
 	defer battle.mu.Unlock()
-	result := make(map[uint16]map[uint32]uint32, len(battle.collectedItems))
-	for playerID, items := range battle.collectedItems {
+	return cloneCollectedBossItems(battle.collectedItems)
+}
+
+// CollectedBossItemsForSettlement returns the permanent Boss items that will
+// be persisted. Some native client versions consume a final OutfitItems
+// object locally without sending NotifyPlayerGetItem. A single-player Boss
+// victory has no ownership ambiguity, so award the remaining permanent items
+// that the server already confirmed as dropped. Multiplayer rounds remain
+// event-driven because the server cannot infer which participant collected an
+// unreported object.
+func (battle *CompetitiveBattle) CollectedBossItemsForSettlement() map[uint16]map[uint32]uint32 {
+	if battle == nil {
+		return nil
+	}
+	battle.mu.Lock()
+	defer battle.mu.Unlock()
+	result := cloneCollectedBossItems(battle.collectedItems)
+	if battle.objective != CompetitiveObjectiveBoss || !battle.concluded || battle.winnerTeamID == 0 || len(battle.participants) != 1 {
+		return result
+	}
+	playerID := battle.participants[0].PlayerID
+	if result[playerID] == nil {
+		result[playerID] = make(map[uint32]uint32)
+	}
+	for itemID, quantity := range battle.droppedSceneItems {
+		if quantity == 0 || !sceneelement.IsPermanentInventoryPickup(itemID) {
+			continue
+		}
+		current := result[playerID][itemID]
+		if ^uint32(0)-current < quantity {
+			result[playerID][itemID] = ^uint32(0)
+			continue
+		}
+		result[playerID][itemID] = current + quantity
+	}
+	return result
+}
+
+func cloneCollectedBossItems(source map[uint16]map[uint32]uint32) map[uint16]map[uint32]uint32 {
+	result := make(map[uint16]map[uint32]uint32, len(source))
+	for playerID, items := range source {
 		cloned := make(map[uint32]uint32, len(items))
 		for itemID, quantity := range items {
 			cloned[itemID] = quantity

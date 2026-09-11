@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"qqtang/internal/clientdata/sceneelement"
 	"qqtang/internal/game/match"
 	roomstate "qqtang/internal/game/room"
 	"qqtang/internal/protocol/capture"
@@ -513,7 +514,9 @@ func normalizeCompetitiveTreasureFastPackages(packages []game.GameplayDataPackag
 // normalizeCompetitiveNativeRelayFastPackages coalesces native scene
 // notifications that the original client can send over both room-fast UDP and
 // reliable TCP. The first transport is relayed; a later exact copy is still
-// ACKed/accounted by its own path but never applied to peers twice.
+// ACKed/accounted by its own path but never applied to peers twice. Fast-only
+// pickups must also be accounted here because the 0x0065 mirror is not sent
+// through the reliable game-event dispatcher.
 func normalizeCompetitiveNativeRelayFastPackages(packages []game.GameplayDataPackage, battle *match.CompetitiveBattle) ([]game.GameplayDataPackage, error) {
 	if battle == nil {
 		return packages, nil
@@ -528,6 +531,11 @@ func normalizeCompetitiveNativeRelayFastPackages(packages []game.GameplayDataPac
 		clone.Messages = make([]game.BattleMessageData, 0, len(packet.Messages))
 		for index, message := range packet.Messages {
 			keep := true
+			if message.DataID == game.NotifyPlayerGetItem {
+				if err := recordCompetitiveNativePickupFast(message.Data, battle); err != nil {
+					return nil, err
+				}
+			}
 			if message.DataID == game.NotifyPlayerGetItem || message.DataID == game.NotifyPlayerDieEvent || message.DataID == game.NotifyPlayerKilled {
 				keep = battle.RecordNativeRelay(uint16(message.DataID), message.Data)
 			}
@@ -542,6 +550,32 @@ func normalizeCompetitiveNativeRelayFastPackages(packages []game.GameplayDataPac
 		}
 	}
 	return filtered, nil
+}
+
+// recordCompetitiveNativePickupFast mirrors the reliable NotifyPlayerGetItem
+// accounting path. Requests only authorize native routing and are therefore
+// intentionally not handled here. Native actors collect transformation items
+// for themselves; only participant pickups can affect settlement.
+func recordCompetitiveNativePickupFast(body []byte, battle *match.CompetitiveBattle) error {
+	event := game.GameEvent{Schema: game.NotifyPlayerGetItem, Body: body}
+	item, err := game.ParsePlayerItemEvent(event)
+	if err != nil {
+		return err
+	}
+	if battle.HasBossEntity(item.PlayerID) || battle.HasNativeNPCEntity(item.PlayerID) {
+		return nil
+	}
+	if match.IsTreasureGem(item.ItemID) {
+		return nil
+	}
+	if reward, proven := sceneelement.NativeReward(sceneelement.ID(item.ItemID)); proven && reward.Kind != sceneelement.RewardTreasureScore {
+		_, err = battle.RecordNativeSceneReward(item.PlayerID, item.ClientTime, item.ItemID, item.PosX, item.PosY)
+		return err
+	}
+	if sceneelement.IsPermanentInventoryPickup(item.ItemID) {
+		_, err = battle.RecordBossPermanentItemPickup(item.PlayerID, item.ClientTime, item.ItemID, item.PosX, item.PosY)
+	}
+	return err
 }
 
 func (server *Server) competitiveFastSettlementAfterUnlock(session *connectionSession, connectionID string, roomID uint16, settlement *competitiveRoomSettlementCommit) func() {

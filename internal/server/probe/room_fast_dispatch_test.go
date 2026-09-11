@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"qqtang/internal/clientdata/sceneelement"
 	"qqtang/internal/game/match"
 	"qqtang/internal/protocol/game"
 )
@@ -613,6 +614,68 @@ func TestNormalizeCompetitiveTreasureFastPackagesCountsPickupAndDropsDuplicateDe
 	}
 }
 
+func TestNormalizeCompetitiveNativeRelayFastPackagesAccountsBossRewards(t *testing.T) {
+	battle := newRoomFastBossRewardBattle(t)
+	if err := battle.RecordBossDeathDrops(30001, []uint32{
+		451,
+		uint32(sceneelement.SugarCoin50),
+		uint32(sceneelement.Experience20),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resolution, err := battle.RecordBossDeath(30001); err != nil || !resolution.NewlyConcluded {
+		t.Fatalf("start Boss victory loot grace = %+v, %v", resolution, err)
+	}
+
+	items := make([]game.BattleMessageData, 0, 3)
+	for index, itemID := range []uint32{451, uint32(sceneelement.SugarCoin50), uint32(sceneelement.Experience20)} {
+		body, err := (game.PlayerItemEvent{
+			PlayerID: 2, ClientTime: uint32(100 + index), ItemID: itemID,
+			PosX: uint16(20 + index), PosY: 30,
+		}).MarshalNetworkBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, game.BattleMessageData{DataID: game.NotifyPlayerGetItem, Data: body})
+	}
+	input := []game.GameplayDataPackage{{
+		PlayerID: 1, GameID: 8, MessageIndexes: []uint32{1, 2, 3}, Messages: items,
+	}}
+	filtered, err := normalizeCompetitiveNativeRelayFastPackages(input, battle)
+	if err != nil || len(filtered) != 1 || len(filtered[0].Messages) != len(items) {
+		t.Fatalf("first Boss reward fast normalization filtered=%+v err=%v", filtered, err)
+	}
+	filtered, err = normalizeCompetitiveNativeRelayFastPackages(input, battle)
+	if err != nil || len(filtered) != 0 {
+		t.Fatalf("duplicate Boss reward fast normalization filtered=%+v err=%v", filtered, err)
+	}
+
+	if got := battle.CollectedBossItems()[2][451]; got != 1 {
+		t.Fatalf("fast Boss equipment count = %d, want 1", got)
+	}
+	if got := battle.SceneRewards()[2]; got != (match.CompetitiveSceneRewards{Money: 50, Experience: 20}) {
+		t.Fatalf("fast Boss scene rewards = %+v", got)
+	}
+}
+
+func TestNormalizeCompetitiveNativeRelayFastPackagesSkipsNativeActorPickup(t *testing.T) {
+	battle := newRoomFastBossRewardBattle(t)
+	body, err := (game.PlayerItemEvent{
+		PlayerID: 30001, ClientTime: 100, ItemID: 451, PosX: 20, PosY: 30,
+	}).MarshalNetworkBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := []game.GameplayDataPackage{{
+		PlayerID: 30001, GameID: 8, MessageIndexes: []uint32{1},
+		Messages: []game.BattleMessageData{{DataID: game.NotifyPlayerGetItem, Data: body}},
+	}}
+	filtered, err := normalizeCompetitiveNativeRelayFastPackages(input, battle)
+	if err != nil || len(filtered) != 1 || len(battle.CollectedBossItems()) != 0 {
+		t.Fatalf("native actor pickup filtered=%+v collected=%+v err=%v", filtered, battle.CollectedBossItems(), err)
+	}
+}
+
 func boolInt(value bool) int {
 	if value {
 		return 1
@@ -633,6 +696,30 @@ func newRoomFastBossBattle(t *testing.T) *match.CompetitiveBattle {
 		BossEntityIDs:    []uint16{30001},
 		BossID:           "test-boss",
 		BossSkills:       map[uint16][]uint16{30001: {1, 2, 3, 4}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return battle
+}
+
+func newRoomFastBossRewardBattle(t *testing.T) *match.CompetitiveBattle {
+	t.Helper()
+	battle, err := match.NewCompetitiveBattleWithRuleConfig(8, 11, 1, []match.CompetitiveParticipant{
+		{PlayerID: 1, RoleID: 1, TeamID: 1},
+		{PlayerID: 2, RoleID: 2, TeamID: 1},
+	}, match.CompetitiveRuleConfig{
+		ConclusionPolicy: match.CompetitiveConclusionClientRule,
+		PlayerLifecycle:  match.CompetitivePlayerPermanentElimination,
+		Objective:        match.CompetitiveObjectiveBoss,
+		TeamTopology:     match.CompetitiveTeamsCooperative,
+		BossEntityIDs:    []uint16{30001},
+		BossID:           "test-boss",
+		BossDeathItems: map[uint16]map[uint32]uint32{30001: {
+			451:                               1,
+			uint32(sceneelement.SugarCoin50):  1,
+			uint32(sceneelement.Experience20): 1,
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
