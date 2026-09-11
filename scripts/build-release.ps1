@@ -123,6 +123,7 @@ $required = @(
 	(Join-Path $workspace 'build-assets\onnxruntime\linux-arm64\libonnxruntime.so.1.29.0'),
 	(Join-Path $workspace 'build-assets\onnxruntime\linux-arm64\libonnxruntime_providers_shared.so'),
 	(Join-Path $workspace 'data\qqt_combine_recipes.json'),
+	(Join-Path $workspace 'data\qqt_forge_rules.json'),
     (Join-Path $workspace 'configs\sso-message-trace-stable.json'),
     (Join-Path $workspace 'deploy\windows\README.txt'),
     (Join-Path $workspace 'deploy\windows\RELEASE.md')
@@ -695,6 +696,7 @@ foreach ($architecture in @('amd64', 'arm64')) {
 	Copy-Item -LiteralPath (Join-Path $linuxRuntimeSource 'libonnxruntime_providers_shared.so') -Destination (Join-Path $linuxRuntimeDestination 'libonnxruntime_providers_shared.so') -Force
 }
 Copy-Item -LiteralPath (Join-Path $workspace 'data\qqt_combine_recipes.json') -Destination (Join-Path $target 'data\qqt_combine_recipes.json') -Force
+Copy-Item -LiteralPath (Join-Path $workspace 'data\qqt_forge_rules.json') -Destination (Join-Path $target 'data\qqt_forge_rules.json') -Force
 Copy-Item -LiteralPath (Join-Path $workspace 'deploy\windows\README.txt') -Destination (Join-Path $target 'README.txt') -Force
 Copy-Item -LiteralPath (Join-Path $workspace 'deploy\windows\start-server-windows.cmd') -Destination (Join-Path $target 'start-server-windows.cmd') -Force
 Copy-Item -LiteralPath (Join-Path $workspace 'deploy\linux\start-server-linux-amd64.sh') -Destination (Join-Path $target 'start-server-linux-amd64.sh') -Force

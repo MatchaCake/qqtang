@@ -22,6 +22,23 @@ func TestLoadConfigRejectsNonLoopback(t *testing.T) {
 	}
 }
 
+func TestLoadConfigResolvesForgeRulesPath(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "server.json")
+	data := []byte(`{"database_path":"players.sqlite","forge_rules_path":"forge-rules.json","listeners":[{"name":"game","network":"tcp","address":"127.0.0.1:18000","response":{}}]}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(directory, "forge-rules.json")
+	if config.ForgeRulesPath != want {
+		t.Fatalf("forge rules path = %q, want %q", config.ForgeRulesPath, want)
+	}
+}
+
 func TestLoadConfigAppliesLANHostSettings(t *testing.T) {
 	directory := t.TempDir()
 	networkPath := filepath.Join(directory, "network.json")

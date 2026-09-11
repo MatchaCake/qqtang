@@ -71,14 +71,12 @@ func loadServerStaticResources(config Config) (serverStaticResources, error) {
 	if config.ClientRoot != "" && config.DatabasePath != "" {
 		forgePath := filepath.Join(config.ClientRoot, "config", "avatarforge.ini")
 		if _, err := os.Stat(forgePath); err == nil {
-			resources.forgeCatalog, err = craftcatalog.LoadForge(config.ClientRoot)
+			if config.ForgeRulesPath == "" {
+				return resources, fmt.Errorf("forge_rules_path is required when avatar forge is available")
+			}
+			resources.forgeCatalog, err = craftcatalog.LoadForge(config.ClientRoot, config.ForgeRulesPath)
 			if err != nil {
 				return resources, fmt.Errorf("load avatar forge catalog: %w", err)
-			}
-			if config.ForgeSuccessPercent != nil {
-				if err = resources.forgeCatalog.SetApplySuccessPercent(*config.ForgeSuccessPercent); err != nil {
-					return resources, err
-				}
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return resources, fmt.Errorf("inspect avatar forge config: %w", err)
