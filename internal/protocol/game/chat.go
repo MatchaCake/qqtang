@@ -75,6 +75,7 @@ type AcrossSectionChatRequest struct {
 type RoomChatNotification struct {
 	SourcePlayerID      uint16
 	DestinationPlayerID uint16
+	Nickname            string
 	Content             string
 }
 
@@ -234,12 +235,30 @@ func decodeChatContent(slot []byte, length uint16) (string, error) {
 }
 
 func marshalRoomChatNotification(message RoomChatNotification) ([]byte, error) {
-	encoded, err := encodeLegacyGBKText(message.Content, RoomChatNotifyContentMaximum)
-	if err != nil {
-		return nil, err
-	}
-	if len(encoded) == 0 {
-		return nil, fmt.Errorf("chat content is empty")
+	var (
+		encoded []byte
+		err     error
+	)
+	if message.SourcePlayerID == RoomChatSystemSourcePlayerID {
+		// QQTSection's 0xFFFF hook copies Msg into a local buffer and renders
+		// that buffer as-is. A name prefix would show up as part of the system line.
+		encoded, err = encodeLegacyGBKText(message.Content, RoomChatNotifyContentMaximum)
+		if err != nil {
+			return nil, err
+		}
+		if len(encoded) == 0 {
+			return nil, fmt.Errorf("chat content is empty")
+		}
+	} else {
+		// QQTSection!FUN_1001fb9f always advances Msg by strlen(nickname)+3
+		// when MsgLength is larger than that prefix. The +3 is the GBK marker
+		// "说:". Sending only the user text makes the first nickname-length
+		// bytes of the chat disappear; a two-character GBK name eats 7 bytes
+		// ("1234567890" becomes "890", and leftover GBK fragments render as boxes).
+		encoded, err = encodeNamedChatMessage(message.Nickname, message.Content, PlayerNicknameSlotSize)
+		if err != nil {
+			return nil, err
+		}
 	}
 	payload := make([]byte, 6+len(encoded))
 	binary.BigEndian.PutUint16(payload[0:2], message.SourcePlayerID)
@@ -250,31 +269,13 @@ func marshalRoomChatNotification(message RoomChatNotification) ([]byte, error) {
 }
 
 func marshalSectionChatNotification(message SectionChatNotification) ([]byte, error) {
-	nickname, err := encodeLegacyGBKText(message.Nickname, SectionChatNicknameMaximum)
-	if err != nil {
-		return nil, fmt.Errorf("section chat nickname: %w", err)
-	}
-	if len(nickname) == 0 {
-		return nil, fmt.Errorf("section chat nickname is empty")
-	}
-	content, err := encodeLegacyGBKText(message.Content, RoomChatNotifyContentMaximum)
-	if err != nil {
-		return nil, err
-	}
-	if len(content) == 0 {
-		return nil, fmt.Errorf("chat content is empty")
-	}
 	// QQTSection!FUN_1002b1fa splits NOTIFY_SECTION_MSG.Msg at the
 	// three-byte GBK marker "说:". Bytes before it are the displayed name;
 	// bytes starting at the marker are the rendered chat text. Sending only
 	// the user-entered text makes the client use the marker itself as the name.
-	const separator = "\xcb\xb5:"
-	encoded := make([]byte, 0, len(nickname)+len(separator)+len(content))
-	encoded = append(encoded, nickname...)
-	encoded = append(encoded, separator...)
-	encoded = append(encoded, content...)
-	if len(encoded) > RoomChatNotifyContentMaximum {
-		return nil, fmt.Errorf("section chat encoded content length %d exceeds %d", len(encoded), RoomChatNotifyContentMaximum)
+	encoded, err := encodeNamedChatMessage(message.Nickname, message.Content, SectionChatNicknameMaximum)
+	if err != nil {
+		return nil, err
 	}
 	payload := make([]byte, 6+len(encoded), 6+len(encoded)+24)
 	binary.BigEndian.PutUint16(payload[0:2], message.SourcePlayerID)
@@ -287,6 +288,33 @@ func marshalSectionChatNotification(message SectionChatNotification) ([]byte, er
 	payload = binary.BigEndian.AppendUint32(payload, message.Point)
 	payload = append(payload, message.KinFlagID[:]...)
 	return payload, nil
+}
+
+
+func encodeNamedChatMessage(nickname, content string, nicknameMaximum int) ([]byte, error) {
+	nicknameBytes, err := encodeLegacyGBKText(nickname, nicknameMaximum)
+	if err != nil {
+		return nil, fmt.Errorf("chat nickname: %w", err)
+	}
+	if len(nicknameBytes) == 0 {
+		return nil, fmt.Errorf("chat nickname is empty")
+	}
+	contentBytes, err := encodeLegacyGBKText(content, RoomChatNotifyContentMaximum)
+	if err != nil {
+		return nil, err
+	}
+	if len(contentBytes) == 0 {
+		return nil, fmt.Errorf("chat content is empty")
+	}
+	const separator = "\xcb\xb5:"
+	encoded := make([]byte, 0, len(nicknameBytes)+len(separator)+len(contentBytes))
+	encoded = append(encoded, nicknameBytes...)
+	encoded = append(encoded, separator...)
+	encoded = append(encoded, contentBytes...)
+	if len(encoded) > RoomChatNotifyContentMaximum {
+		return nil, fmt.Errorf("encoded chat content length %d exceeds %d", len(encoded), RoomChatNotifyContentMaximum)
+	}
+	return encoded, nil
 }
 
 func marshalAcrossSectionChatNotification(message AcrossSectionChatNotification) ([]byte, error) {

@@ -50,7 +50,8 @@ func TestRoomChatSendsDedicatedContentNotificationToSelfAndPeer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s inspect: %v", label, err)
 		}
-		if message.Command != game.RoomChatNotifyCommand || len(message.Payload) != 11 || binary.BigEndian.Uint16(message.Payload[0:2]) != 1 || string(message.Payload[6:]) != "hello" {
+		wireContent := []byte("LocalPlayer\xcb\xb5:hello")
+		if message.Command != game.RoomChatNotifyCommand || len(message.Payload) != 6+len(wireContent) || binary.BigEndian.Uint16(message.Payload[0:2]) != 1 || string(message.Payload[6:]) != string(wireContent) {
 			t.Fatalf("%s room chat notification = %+v payload=%x", label, message, message.Payload)
 		}
 	}
