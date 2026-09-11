@@ -1042,6 +1042,10 @@ func writeStoreError(writer http.ResponseWriter, err error) {
 		writeError(writer, http.StatusConflict, "现有宠物数量超过移除后的宠物栏上限，请先移除多余宠物")
 		return
 	}
+	if errors.Is(err, persistence.ErrInventoryKindLimitReached) {
+		writeError(writer, http.StatusConflict, "背包种类已满，客户端最多容纳 500 种物品")
+		return
+	}
 	writeInternalError(writer, err)
 }
 

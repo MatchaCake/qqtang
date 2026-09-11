@@ -313,6 +313,7 @@ const (
 	PurchaseUnsupportedMethod PurchaseStatus = "unsupported_payment"
 	PurchaseInsufficientFunds PurchaseStatus = "insufficient_funds"
 	PurchaseAlreadyOwned      PurchaseStatus = "already_owned"
+	PurchaseInventoryFull     PurchaseStatus = "inventory_full"
 )
 
 type PurchaseResult struct {
@@ -376,6 +377,8 @@ func (service *PlayerService) PurchaseCommodity(ctx context.Context, uin uint32,
 			return PurchaseResult{Status: PurchaseInsufficientFunds, Message: "糖币不足", Product: product}, nil
 		case errors.Is(err, persistence.ErrInventoryItemOwned):
 			return PurchaseResult{Status: PurchaseAlreadyOwned, Message: "该永久道具已在背包中", Product: product}, nil
+		case errors.Is(err, persistence.ErrInventoryKindLimitReached):
+			return PurchaseResult{Status: PurchaseInventoryFull, Message: "背包种类已满，最多 500 种", Product: product}, nil
 		default:
 			return PurchaseResult{}, err
 		}

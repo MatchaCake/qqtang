@@ -23,6 +23,7 @@ var (
 	ErrInsufficientGameMoney       = errors.New("insufficient game money")
 	ErrInventoryItemOwned          = errors.New("non-stackable inventory item is already owned")
 	ErrInventoryItemMissing        = errors.New("inventory item is missing or exhausted")
+	ErrInventoryKindLimitReached   = errors.New("inventory kind limit is reached")
 	ErrPetAlreadyOwned             = errors.New("pet type is already owned")
 	ErrPetCapacityReached          = errors.New("pet capacity is reached")
 	ErrPetCapacityReduction        = errors.New("pet capacity cannot be reduced below the owned pet count")

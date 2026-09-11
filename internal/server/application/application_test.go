@@ -189,6 +189,49 @@ func TestPlayerServiceRunsAssetLifecycleWithoutClient(t *testing.T) {
 	}
 }
 
+func TestPlayerServiceReportsInventoryKindLimitForShop(t *testing.T) {
+	ctx := context.Background()
+	store, err := persistence.OpenPlayerStore(filepath.Join(t.TempDir(), "players.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const uin uint32 = 1_000_001
+	profile := game.DefaultPlayerProfile()
+	profile.GameInfo.Money = 1_000
+	for itemID := uint16(1_000); len(profile.Inventory) < game.MaxItemInfoCount; itemID++ {
+		profile.Inventory = append(profile.Inventory, game.NewPermanentItemInfo(itemID, 1))
+	}
+	if err = store.Save(ctx, uin, profile); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewPlayerService(store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := shopcatalog.NewCatalog(848,
+		[]itemcatalog.RegistryEntry{{ItemID: 20_001, Category: "item", ResourceID: 1, Name: "新道具"}},
+		[]itemcatalog.CommodityEntry{{CommodityID: 90_001, Category: "item", ResourceID: 1, Name: "新道具"}},
+		shopcatalog.DefaultCommodityLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.PurchaseCommodity(ctx, uin, catalog, 90_001, PaymentGameMoney, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PurchaseInventoryFull || result.Message != "背包种类已满，最多 500 种" {
+		t.Fatalf("inventory-full purchase result = %+v", result)
+	}
+	after, err := store.Load(ctx, uin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.GameInfo.Money != 1_000 || len(after.Inventory) != game.MaxItemInfoCount {
+		t.Fatalf("inventory-full purchase mutated profile = money:%d kinds:%d", after.GameInfo.Money, len(after.Inventory))
+	}
+}
+
 func TestPlayerServiceCommitsCompetitiveRoomAsOneBatch(t *testing.T) {
 	ctx := context.Background()
 	store, err := persistence.OpenPlayerStore(filepath.Join(t.TempDir(), "players.db"))
