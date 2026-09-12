@@ -290,7 +290,7 @@ func (server *Server) completeCompetitiveRoomMatchOnRoomActor(actor *connectionS
 		members = []*connectionSession{actor}
 	}
 	sceneRewards := commit.Battle.SceneRewards()
-	collectedBossItems := commit.Battle.CollectedBossItems()
+	collectedBossItems := commit.Battle.CollectedBossItemsForSettlement()
 	prepared := make([]preparedCompetitiveRoomSettlement, 0, len(members))
 	for _, member := range members {
 		member.mu.Lock()

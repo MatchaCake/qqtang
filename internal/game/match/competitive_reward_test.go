@@ -122,6 +122,83 @@ func TestCompetitiveBossPermanentPickupIsBoundedAndDeduplicated(t *testing.T) {
 	}
 }
 
+func TestCompetitiveBossSettlementFallbackAwardsUnreportedSoloOutfit(t *testing.T) {
+	battle, err := NewCompetitiveBattleWithRuleConfig(5, 11, 1, []CompetitiveParticipant{
+		{PlayerID: 1, RoleID: 1, TeamID: 1},
+	}, CompetitiveRuleConfig{
+		ConclusionPolicy: CompetitiveConclusionClientRule,
+		Objective:        CompetitiveObjectiveBoss, TeamTopology: CompetitiveTeamsCooperative,
+		BossEntityIDs: []uint16{30001}, BossID: "sailor",
+		BossDeathItems: map[uint16]map[uint32]uint32{30001: {451: 1, 452: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = battle.RecordBossDeathDrops(30001, []uint32{451, 452}); err != nil {
+		t.Fatal(err)
+	}
+	if got := battle.CollectedBossItemsForSettlement(); len(got) != 0 {
+		t.Fatalf("pre-victory fallback awarded items = %+v", got)
+	}
+	if resolution, recordErr := battle.RecordBossDeath(30001); recordErr != nil || !resolution.NewlyConcluded {
+		t.Fatalf("record Boss victory = %+v, %v", resolution, recordErr)
+	}
+	items := battle.CollectedBossItemsForSettlement()
+	if items[1][451] != 1 || items[1][452] != 1 {
+		t.Fatalf("solo Boss settlement items = %+v", items)
+	}
+}
+
+func TestCompetitiveBossSettlementFallbackDoesNotDuplicateReportedPickup(t *testing.T) {
+	battle, err := NewCompetitiveBattleWithRuleConfig(6, 11, 1, []CompetitiveParticipant{
+		{PlayerID: 1, RoleID: 1, TeamID: 1},
+	}, CompetitiveRuleConfig{
+		ConclusionPolicy: CompetitiveConclusionClientRule,
+		Objective:        CompetitiveObjectiveBoss, TeamTopology: CompetitiveTeamsCooperative,
+		BossEntityIDs: []uint16{30001}, BossID: "sailor",
+		BossDeathItems: map[uint16]map[uint32]uint32{30001: {451: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = battle.RecordBossDeathDrops(30001, []uint32{451}); err != nil {
+		t.Fatal(err)
+	}
+	if resolution, recordErr := battle.RecordBossDeath(30001); recordErr != nil || !resolution.NewlyConcluded {
+		t.Fatalf("record Boss victory = %+v, %v", resolution, recordErr)
+	}
+	if recorded, pickupErr := battle.RecordBossPermanentItemPickup(1, 100, 451, 20, 30); pickupErr != nil || !recorded {
+		t.Fatalf("record reported pickup = %t, %v", recorded, pickupErr)
+	}
+	if got := battle.CollectedBossItemsForSettlement()[1][451]; got != 1 {
+		t.Fatalf("reported solo Boss settlement item count = %d, want 1", got)
+	}
+}
+
+func TestCompetitiveBossSettlementFallbackRemainsDisabledForMultiplayer(t *testing.T) {
+	battle, err := NewCompetitiveBattleWithRuleConfig(7, 11, 1, []CompetitiveParticipant{
+		{PlayerID: 1, RoleID: 1, TeamID: 1},
+		{PlayerID: 2, RoleID: 2, TeamID: 1},
+	}, CompetitiveRuleConfig{
+		ConclusionPolicy: CompetitiveConclusionClientRule,
+		Objective:        CompetitiveObjectiveBoss, TeamTopology: CompetitiveTeamsCooperative,
+		BossEntityIDs: []uint16{30001}, BossID: "sailor",
+		BossDeathItems: map[uint16]map[uint32]uint32{30001: {451: 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = battle.RecordBossDeathDrops(30001, []uint32{451}); err != nil {
+		t.Fatal(err)
+	}
+	if resolution, recordErr := battle.RecordBossDeath(30001); recordErr != nil || !resolution.NewlyConcluded {
+		t.Fatalf("record Boss victory = %+v, %v", resolution, recordErr)
+	}
+	if got := battle.CollectedBossItemsForSettlement(); len(got) != 0 {
+		t.Fatalf("multiplayer fallback awarded items = %+v", got)
+	}
+}
+
 func TestCompetitiveBossDeathAllowsPartialInventoryButRejectsOverflow(t *testing.T) {
 	newBattle := func() *CompetitiveBattle {
 		battle, err := NewCompetitiveBattleWithRuleConfig(4, 11, 1, []CompetitiveParticipant{

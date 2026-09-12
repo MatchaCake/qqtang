@@ -200,7 +200,7 @@ func (server *Server) handleCompetitiveDeparture(session *connectionSession, con
 			settlement.Points = saturatingAddUint32(settlement.Points, reward.Experience)
 			settlement.MoneyReward = reward.Money
 		}
-		settlement.CollectedItems = battle.CollectedBossItems()[session.Profile.PlayerID]
+		settlement.CollectedItems = battle.CollectedBossItemsForSettlement()[session.Profile.PlayerID]
 		return competitiveDepartureTransition{DepartingSettlement: &settlement}
 	}
 	resolution, err := battle.RecordDeparture(session.Profile.PlayerID)
@@ -213,7 +213,7 @@ func (server *Server) handleCompetitiveDeparture(session *connectionSession, con
 	}
 	transition := competitiveDepartureTransition{ArbitratorPlayerID: resolution.ArbitratorPlayerID}
 	if !resolution.NewlyConcluded {
-		settlement := competitiveSettlementCommit{Result: game.GameResultLoss, CollectedItems: battle.CollectedBossItems()[session.Profile.PlayerID]}
+		settlement := competitiveSettlementCommit{Result: game.GameResultLoss, CollectedItems: battle.CollectedBossItemsForSettlement()[session.Profile.PlayerID]}
 		transition.DepartingSettlement = &settlement
 		return transition
 	}
@@ -227,7 +227,7 @@ func (server *Server) handleCompetitiveDeparture(session *connectionSession, con
 		settlement.Points = saturatingAddUint32(settlement.Points, reward.Experience)
 		settlement.MoneyReward = reward.Money
 	}
-	settlement.CollectedItems = battle.CollectedBossItems()[session.Profile.PlayerID]
+	settlement.CollectedItems = battle.CollectedBossItemsForSettlement()[session.Profile.PlayerID]
 	transition.Battle = battle
 	transition.GameOver = &gameOver
 	transition.DepartingSettlement = &settlement
