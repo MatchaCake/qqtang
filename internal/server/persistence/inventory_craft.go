@@ -23,6 +23,33 @@ type InventoryConsumption struct {
 	Quantity uint32
 }
 
+func validateInventoryKindLimitTx(ctx context.Context, tx *sql.Tx, uin uint32, itemIDs []uint16) error {
+	var kindCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM player_inventory WHERE uin = ? AND quantity > 0`, uin).Scan(&kindCount); err != nil {
+		return fmt.Errorf("count inventory kinds for UIN %d: %w", uin, err)
+	}
+	seen := make(map[uint16]struct{}, len(itemIDs))
+	for _, itemID := range itemIDs {
+		if itemID == 0 {
+			continue
+		}
+		if _, ok := seen[itemID]; ok {
+			continue
+		}
+		seen[itemID] = struct{}{}
+		var active int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM player_inventory WHERE uin = ? AND item_id = ? AND quantity > 0`, uin, itemID).Scan(&active); errors.Is(err, sql.ErrNoRows) {
+			kindCount++
+		} else if err != nil {
+			return fmt.Errorf("check inventory item %d for UIN %d: %w", itemID, uin, err)
+		}
+	}
+	if kindCount > game.MaxItemInfoCount {
+		return fmt.Errorf("UIN %d inventory would contain %d kinds: %w", uin, kindCount, ErrInventoryKindLimitReached)
+	}
+	return nil
+}
+
 // ExchangeInventoryItems atomically consumes account items and grants stack
 // rewards. The returned rows are absolute post-transaction values for every
 // touched item, including zero-quantity tombstones required by the old client.
@@ -114,6 +141,13 @@ func (store *PlayerStore) ExchangeInventoryItems(ctx context.Context, uin uint32
 		} else if _, err = tx.ExecContext(ctx, `UPDATE player_inventory SET quantity = ? WHERE uin = ? AND item_id = ?`, remaining, uin, itemID); err != nil {
 			return nil, fmt.Errorf("consume UIN %d item %d for exchange: %w", uin, itemID, err)
 		}
+	}
+	grantIDs := make([]uint16, 0, len(grantByID))
+	for itemID := range grantByID {
+		grantIDs = append(grantIDs, itemID)
+	}
+	if err = validateInventoryKindLimitTx(ctx, tx, uin, grantIDs); err != nil {
+		return nil, err
 	}
 	for _, itemID := range ids {
 		grant, ok := grantByID[itemID]
@@ -279,6 +313,9 @@ func (store *PlayerStore) SetInventoryItem(ctx context.Context, uin uint32, item
 	} else {
 		item.BuyTime = 0
 		item.AvailPeriod = game.LocalPermanentAvailablePeriod
+		if err = validateInventoryKindLimitTx(ctx, tx, uin, []uint16{item.ItemID}); err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO player_inventory(
 			uin, item_id, quantity, item_status, item_role_id, item_effect, item_color, buy_time, available_period
 		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -436,6 +473,9 @@ func (store *PlayerStore) PurchaseInventoryItem(ctx context.Context, uin uint32,
 	}
 	if profile.GameInfo.Money < price {
 		return game.PlayerProfile{}, fmt.Errorf("need %d, have %d: %w", price, profile.GameInfo.Money, ErrInsufficientGameMoney)
+	}
+	if err = validateInventoryKindLimitTx(ctx, tx, uin, []uint16{item.ItemID}); err != nil {
+		return game.PlayerProfile{}, err
 	}
 	profile.GameInfo.Money -= price
 	profileRecord := profile
@@ -609,6 +649,9 @@ func (store *PlayerStore) ApplyCombineRecipe(ctx context.Context, uin uint32, re
 			return nil, fmt.Errorf("consume combine material %d: %w", material.ItemID, err)
 		}
 		changes = append(changes, item)
+	}
+	if err = validateInventoryKindLimitTx(ctx, tx, uin, []uint16{recipe.ProductItemID}); err != nil {
+		return nil, err
 	}
 
 	var productQuantity uint64

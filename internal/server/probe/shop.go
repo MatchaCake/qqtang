@@ -226,6 +226,8 @@ func (server *Server) settleShopPurchaseLocked(session *connectionSession, reque
 		return response, "insufficient_game_money", nil
 	case application.PurchaseAlreadyOwned:
 		return response, "already_owned", nil
+	case application.PurchaseInventoryFull:
+		return response, "inventory_full", nil
 	case application.PurchaseSuccess:
 	default:
 		return response, "persistence_failed", fmt.Errorf("unknown application purchase status %q", purchase.Status)

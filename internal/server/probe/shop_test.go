@@ -230,6 +230,41 @@ func TestShopPurchaseRefreshesSessionAndCanBeEquipped(t *testing.T) {
 	}
 }
 
+func TestShopPurchaseReportsInventoryKindLimit(t *testing.T) {
+	ctx := context.Background()
+	store, err := persistence.OpenPlayerStore(filepath.Join(t.TempDir(), "players.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const uin uint32 = 1_000_001
+	profile := game.DefaultPlayerProfile()
+	profile.GameInfo.Money = 1_000
+	for itemID := uint16(1_000); len(profile.Inventory) < game.MaxItemInfoCount; itemID++ {
+		profile.Inventory = append(profile.Inventory, game.NewPermanentItemInfo(itemID, 1))
+	}
+	if err = store.Save(ctx, uin, profile); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := shopcatalog.NewCatalog(848,
+		[]itemcatalog.RegistryEntry{{ItemID: 20_001, Category: "item", ResourceID: 1, Name: "新道具"}},
+		[]itemcatalog.CommodityEntry{{CommodityID: 90_001, Category: "item", ResourceID: 1, Name: "新道具"}},
+		shopcatalog.DefaultCommodityLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{playerStore: store, shopCatalog: catalog}
+	response, outcome, err := settleShopPurchaseUnderConnectionLock(t, server, &connectionSession{UIN: uin, Profile: profile}, game.ShopBuyRequest{
+		UIN: uin, CommodityID: 90_001, DealType: game.ShopDealTypePurchase, PayType: game.ShopPayTypeGameMoney,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ResultID != game.ShopBuyResultFailed || response.ResultString != "背包种类已满，最多 500 种" || outcome != "inventory_full" {
+		t.Fatalf("inventory-full shop response = %+v / %s", response, outcome)
+	}
+}
+
 func settleShopPurchaseUnderConnectionLock(t *testing.T, server *Server, session *connectionSession, request game.ShopBuyRequest) (game.ShopBuyResponse, string, error) {
 	t.Helper()
 	type result struct {

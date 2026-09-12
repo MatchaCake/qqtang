@@ -21,6 +21,14 @@ import (
 	"qqtang/internal/server/persistence"
 )
 
+func TestWriteStoreErrorMapsInventoryKindLimit(t *testing.T) {
+	response := httptest.NewRecorder()
+	writeStoreError(response, fmt.Errorf("wrapped: %w", persistence.ErrInventoryKindLimitReached))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "背包种类已满，客户端最多容纳 500 种物品") {
+		t.Fatalf("inventory kind limit response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestGMAccountInventorySearchAndNativeIcon(t *testing.T) {
 	root := t.TempDir()
 	store, err := persistence.OpenPlayerStore(filepath.Join(root, "players.sqlite"))
