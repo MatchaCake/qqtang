@@ -21,7 +21,7 @@
   "equipment_seeds_path": "starter-loadouts.json",
   "combine_recipes_path": "../data/qqt_combine_recipes.json",
   "break_egg_rewards_path": "break-egg-rewards.json",
-  "forge_apply_success_percent": 50,
+  "forge_rules_path": "../data/qqt_forge_rules.json",
   "item_image_aliases_path": "item-image-aliases.json",
   "network_settings_path": "network.json",
   "gm_http_address": "127.0.0.1:18100",

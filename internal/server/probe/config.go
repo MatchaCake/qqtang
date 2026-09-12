@@ -33,7 +33,7 @@ type Config struct {
 	EquipmentSeedsPath     string                                   `json:"equipment_seeds_path,omitempty"`
 	CombineRecipesPath     string                                   `json:"combine_recipes_path,omitempty"`
 	BreakEggRewardsPath    string                                   `json:"break_egg_rewards_path,omitempty"`
-	ForgeSuccessPercent    *int                                     `json:"forge_apply_success_percent,omitempty"`
+	ForgeRulesPath         string                                   `json:"forge_rules_path,omitempty"`
 	ItemImageAliasesPath   string                                   `json:"item_image_aliases_path,omitempty"`
 	NetworkSettingsPath    string                                   `json:"network_settings_path,omitempty"`
 	GMHTTPAddress          string                                   `json:"gm_http_address,omitempty"`
@@ -313,6 +313,9 @@ func LoadConfig(path string) (Config, error) {
 	if config.BreakEggRewardsPath != "" && !filepath.IsAbs(config.BreakEggRewardsPath) {
 		config.BreakEggRewardsPath = filepath.Clean(filepath.Join(base, config.BreakEggRewardsPath))
 	}
+	if config.ForgeRulesPath != "" && !filepath.IsAbs(config.ForgeRulesPath) {
+		config.ForgeRulesPath = filepath.Clean(filepath.Join(base, config.ForgeRulesPath))
+	}
 	if config.ItemImageAliasesPath != "" && !filepath.IsAbs(config.ItemImageAliasesPath) {
 		config.ItemImageAliasesPath = filepath.Clean(filepath.Join(base, config.ItemImageAliasesPath))
 	}
@@ -485,8 +488,8 @@ func (config *Config) validate(configBase string) error {
 	if config.BreakEggRewardsPath != "" && config.DatabasePath == "" {
 		return fmt.Errorf("break_egg_rewards_path requires database_path")
 	}
-	if config.ForgeSuccessPercent != nil && (*config.ForgeSuccessPercent < 0 || *config.ForgeSuccessPercent > 100) {
-		return fmt.Errorf("forge_apply_success_percent is outside 0..100")
+	if config.ForgeRulesPath != "" && config.DatabasePath == "" {
+		return fmt.Errorf("forge_rules_path requires database_path")
 	}
 	for candidateID, rewards := range config.CompetitiveBossRewards {
 		if strings.TrimSpace(candidateID) == "" {
