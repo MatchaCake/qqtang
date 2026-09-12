@@ -73,7 +73,7 @@ func TestForgeMaterialRulesLoadIndependentWeightedConfiguration(t *testing.T) {
 
 func TestLoadForgeUsesServerRulesWithoutItemRegistry(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
-	catalog, err := LoadForge(filepath.Join(root, "client", "original"), filepath.Join(root, "data", "qqt_forge_rules.json"))
+	catalog, err := LoadForge(filepath.Join("testdata", "forge-client"), filepath.Join(root, "data", "qqt_forge_rules.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
