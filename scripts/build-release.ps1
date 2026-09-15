@@ -66,7 +66,14 @@ function Set-ReleaseIniExactValue([string] $Path, [string] $Name, [string] $OldV
 	$encoding = [Text.Encoding]::GetEncoding(936)
 	$text = [IO.File]::ReadAllText($Path, $encoding)
 	$pattern = '(?m)^(' + [Regex]::Escape($Name) + '=)' + [Regex]::Escape($OldValue) + '\r?$'
-	if (-not [Regex]::IsMatch($text, $pattern)) { throw "Expected value $Name=$OldValue was not found in $Path" }
+	if (-not [Regex]::IsMatch($text, $pattern)) {
+		# The baseline must be the pristine supported client; report what the
+		# file actually contains so a wrong or already-patched extract is obvious.
+		$keyPattern = '(?mi)^[ \t]*' + [Regex]::Escape($Name) + '[ \t]*=[^\r\n]*'
+		$actualLines = [Regex]::Matches($text, $keyPattern) | ForEach-Object { $_.Value.Trim() }
+		$detail = if ($actualLines) { 'actual: ' + ($actualLines -join '; ') } else { "no $Name line exists" }
+		throw "Expected value $Name=$OldValue was not found in $Path ($detail)"
+	}
 	$text = [Regex]::Replace($text, $pattern, ('${1}' + $NewValue))
 	[IO.File]::WriteAllText($Path, $text, $encoding)
 }
