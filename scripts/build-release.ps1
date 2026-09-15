@@ -274,7 +274,28 @@ if (-not $gcc) {
     if ($gccPath) { $gcc = Get-Command $gccPath -ErrorAction Stop }
 }
 if (-not $gcc) { throw 'ONNX Runtime release build requires a Windows amd64 GCC toolchain for CGO.' }
-$python = Get-Command python -ErrorAction Stop
+$pythonExe = $null
+$pythonArgs = @()
+$pythonCandidates = @()
+$pyLauncher = Get-Command py -ErrorAction SilentlyContinue
+if ($pyLauncher) { $pythonCandidates += @{ Exe = $pyLauncher.Source; Args = @('-3') } }
+foreach ($pythonName in @('python3', 'python')) {
+    $pythonCommand = Get-Command $pythonName -ErrorAction SilentlyContinue
+    if ($pythonCommand -and $pythonCommand.Source -notlike '*\Microsoft\WindowsApps\*') {
+        $pythonCandidates += @{ Exe = $pythonCommand.Source; Args = @() }
+    }
+}
+foreach ($pythonCandidate in $pythonCandidates) {
+    & $pythonCandidate.Exe $pythonCandidate.Args -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $pythonExe = $pythonCandidate.Exe
+        $pythonArgs = $pythonCandidate.Args
+        break
+    }
+}
+if (-not $pythonExe) {
+    throw 'The Python 2.3 item-registry patch needs a working Python 3.8+ interpreter; none was found. The Microsoft Store python.exe alias stub does not count. Install Python 3 (winget install Python.Python.3.12 or https://www.python.org/downloads/windows/), then reopen the shell and rerun the build.'
+}
 $goCache = Join-Path $workspace '.cache\go-build'
 New-Item -ItemType Directory -Force -Path $goCache | Out-Null
 $env:GOCACHE = $goCache
@@ -321,9 +342,9 @@ try {
 	if ($LASTEXITCODE -ne 0) { throw "QQTSection static single-player Boss-card patch exited with $LASTEXITCODE" }
 	& $go.Source run ./cmd/qqt-static-solo-boss-card -check -client-root $targetClient
 	if ($LASTEXITCODE -ne 0) { throw "QQTSection static single-player Boss-card verification exited with $LASTEXITCODE" }
-	& $python.Source (Join-Path $workspace 'scripts\patch-python23-item-registry.py') --client-root $targetClient --xdis-root (Join-Path $workspace 'build-assets\pytools')
+	& $pythonExe $pythonArgs (Join-Path $workspace 'scripts\patch-python23-item-registry.py') --client-root $targetClient --xdis-root (Join-Path $workspace 'build-assets\pytools')
 	if ($LASTEXITCODE -ne 0) { throw "Python 2.3 item-registry patch exited with $LASTEXITCODE" }
-	& $python.Source (Join-Path $workspace 'scripts\patch-python23-item-registry.py') --check --client-root $targetClient --xdis-root (Join-Path $workspace 'build-assets\pytools')
+	& $pythonExe $pythonArgs (Join-Path $workspace 'scripts\patch-python23-item-registry.py') --check --client-root $targetClient --xdis-root (Join-Path $workspace 'build-assets\pytools')
 	if ($LASTEXITCODE -ne 0) { throw "Python 2.3 item-registry verification exited with $LASTEXITCODE" }
 	$soloBossPatchEvidence = Get-Content -Raw -LiteralPath $soloBossPatchReport | ConvertFrom-Json
 	$soloBossPatchEvidence.client_root = 'runtime/client-patched'
