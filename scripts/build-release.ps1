@@ -243,9 +243,14 @@ $preferredGoPath = if ($env:QQTANG_GO) {
     $env:QQTANG_GO
 }
 else {
-    Join-Path (Split-Path (Split-Path $workspace)) 'go1.26.7\bin\go.exe'
+    # The bundled toolchain convention places go1.26.7 next to the workspace's
+    # grandparent. A workspace checked out at a drive root has no grandparent;
+    # fall back to the go command on PATH instead of joining an empty path.
+    $workspaceParent = Split-Path $workspace
+    $workspaceGrandparent = if ($workspaceParent) { Split-Path $workspaceParent } else { '' }
+    if ($workspaceGrandparent) { Join-Path $workspaceGrandparent 'go1.26.7\bin\go.exe' } else { '' }
 }
-$go = if (Test-Path -LiteralPath $preferredGoPath -PathType Leaf) {
+$go = if ($preferredGoPath -and (Test-Path -LiteralPath $preferredGoPath -PathType Leaf)) {
     Get-Command $preferredGoPath -ErrorAction Stop
 }
 else {
