@@ -1,6 +1,10 @@
 ﻿[CmdletBinding()]
 param(
-    [string] $Name = 'QQTang-Local'
+    [string] $Name = 'QQTang-Local',
+    # Build only the Windows artifacts: skip the Linux ONNX Runtime downloads,
+    # the Linux amd64/arm64 server cross-builds (which need Linux cross GCC
+    # toolchains), and the Linux runtime/config/start-script payload.
+    [switch] $WindowsOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,11 +116,13 @@ function Set-ReleaseClientFrameRate([string] $Path, [int] $FrameRate) {
 	[IO.File]::WriteAllText($Path, $text, $encoding)
 }
 
-$ensureONNXRuntimeLinux = Join-Path $workspace 'scripts\ensure-onnxruntime-linux.ps1'
-if (-not (Test-Path -LiteralPath $ensureONNXRuntimeLinux -PathType Leaf)) {
-	throw "Linux ONNX Runtime dependency installer is missing: $ensureONNXRuntimeLinux"
+if (-not $WindowsOnly) {
+	$ensureONNXRuntimeLinux = Join-Path $workspace 'scripts\ensure-onnxruntime-linux.ps1'
+	if (-not (Test-Path -LiteralPath $ensureONNXRuntimeLinux -PathType Leaf)) {
+		throw "Linux ONNX Runtime dependency installer is missing: $ensureONNXRuntimeLinux"
+	}
+	& $ensureONNXRuntimeLinux
 }
-& $ensureONNXRuntimeLinux
 
 $required = @(
 	(Join-Path $workspace 'build-assets\client-no-tp\Client.exe'),
@@ -137,18 +143,12 @@ $required = @(
 	(Join-Path $workspace 'configs\models\qqtang-rule1.onnx.json'),
 	(Join-Path $workspace 'build-assets\onnxruntime\windows-amd64\onnxruntime.dll'),
 	(Join-Path $workspace 'build-assets\onnxruntime\windows-amd64\onnxruntime_providers_shared.dll'),
-	(Join-Path $workspace 'build-assets\onnxruntime\linux-amd64\libonnxruntime.so.1.29.0'),
-	(Join-Path $workspace 'build-assets\onnxruntime\linux-amd64\libonnxruntime_providers_shared.so'),
-	(Join-Path $workspace 'build-assets\onnxruntime\linux-arm64\libonnxruntime.so.1.29.0'),
-	(Join-Path $workspace 'build-assets\onnxruntime\linux-arm64\libonnxruntime_providers_shared.so'),
 	(Join-Path $workspace 'data\qqt_combine_recipes.json'),
 	(Join-Path $workspace 'data\qqt_forge_rules.json'),
     (Join-Path $workspace 'configs\sso-message-trace-stable.json'),
     (Join-Path $workspace 'deploy\windows\README.txt'),
     (Join-Path $workspace 'deploy\windows\RELEASE.md')
 	(Join-Path $workspace 'deploy\windows\start-server-windows.cmd')
-	(Join-Path $workspace 'deploy\linux\start-server-linux-amd64.sh')
-	(Join-Path $workspace 'deploy\linux\start-server-linux-arm64.sh')
 	(Join-Path $workspace 'scripts\ensure-client-resource-aliases.ps1')
 	(Join-Path $workspace 'cmd\qqt-tp-compat-dll\main.go')
 	(Join-Path $workspace 'cmd\qqt-static-shop-server\main.go')
@@ -167,6 +167,16 @@ $required = @(
 	(Join-Path $workspace 'cmd\qqt-launcher-winforms\QQTang.ico')
 	(Join-Path $workspace 'cmd\qqt-launcher-winforms\QQTang-Launcher.exe.manifest')
 )
+if (-not $WindowsOnly) {
+	$required += @(
+		(Join-Path $workspace 'build-assets\onnxruntime\linux-amd64\libonnxruntime.so.1.29.0'),
+		(Join-Path $workspace 'build-assets\onnxruntime\linux-amd64\libonnxruntime_providers_shared.so'),
+		(Join-Path $workspace 'build-assets\onnxruntime\linux-arm64\libonnxruntime.so.1.29.0'),
+		(Join-Path $workspace 'build-assets\onnxruntime\linux-arm64\libonnxruntime_providers_shared.so'),
+		(Join-Path $workspace 'deploy\linux\start-server-linux-amd64.sh'),
+		(Join-Path $workspace 'deploy\linux\start-server-linux-arm64.sh')
+	)
+}
 foreach ($path in $required) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Release dependency is missing: $path" }
 }
@@ -439,6 +449,7 @@ try {
 		$env:CGO_ENABLED = $previousWindowsCGOEnabled
 		$env:CC = $previousWindowsCC
 	}
+	if (-not $WindowsOnly) {
 	$linuxAMD64Server = Join-Path $target 'runtime\bin\qqt-server-linux-amd64'
 	$linuxARM64Server = Join-Path $target 'runtime\bin\qqt-server-linux-arm64'
 	$linuxAMD64CC = @(
@@ -488,6 +499,7 @@ try {
 			$buildInfo -notmatch 'github.com/microsoft/onnxruntime/go') {
 			throw "Linux server was built without the ONNX Runtime CGO backend: $linuxServer"
 		}
+	}
 	}
     & $go.Source build -trimpath -o (Join-Path $target 'runtime\bin\qqt-launch-local.exe') ./cmd/qqt-launch
     if ($LASTEXITCODE -ne 0) { throw "qqt-launch release build exited with $LASTEXITCODE" }
@@ -697,13 +709,15 @@ if ($frameRatePatchEvidence.path -ne 'runtime/client-patched/Client.exe' -or
 foreach ($fileName in @('server-directory-local-ui.json', 'adventure-rules.json', 'role-rules.json', 'starter-loadouts.json', 'break-egg-rewards.json', 'item-image-aliases.json', 'network.json', 'sso-message-trace-stable.json')) {
     Copy-Item -LiteralPath (Join-Path $workspace "configs\$fileName") -Destination (Join-Path $target "configs\$fileName") -Force
 }
-foreach ($architecture in @('amd64', 'arm64')) {
-	$linuxServerConfig = Get-Content -Raw -LiteralPath (Join-Path $target 'configs\server-directory-local-ui.json') | ConvertFrom-Json
-	$linuxServerConfig.competitive_ai.backend = 'onnxruntime'
-	$linuxServerConfig.competitive_ai.model_path = 'models/qqtang-rule1.onnx'
-	$linuxServerConfig.competitive_ai | Add-Member -NotePropertyName metadata_path -NotePropertyValue 'models/qqtang-rule1.onnx.json' -Force
-	$linuxServerConfig.competitive_ai.shared_library_path = ''
-	$linuxServerConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $target "configs\server-directory-local-ui-linux-$architecture.json") -Encoding utf8
+if (-not $WindowsOnly) {
+	foreach ($architecture in @('amd64', 'arm64')) {
+		$linuxServerConfig = Get-Content -Raw -LiteralPath (Join-Path $target 'configs\server-directory-local-ui.json') | ConvertFrom-Json
+		$linuxServerConfig.competitive_ai.backend = 'onnxruntime'
+		$linuxServerConfig.competitive_ai.model_path = 'models/qqtang-rule1.onnx'
+		$linuxServerConfig.competitive_ai | Add-Member -NotePropertyName metadata_path -NotePropertyValue 'models/qqtang-rule1.onnx.json' -Force
+		$linuxServerConfig.competitive_ai.shared_library_path = ''
+		$linuxServerConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $target "configs\server-directory-local-ui-linux-$architecture.json") -Encoding utf8
+	}
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $target 'configs\models') | Out-Null
 Copy-Item -LiteralPath (Join-Path $workspace 'configs\models\qqtang-rule1.onnx') -Destination (Join-Path $target 'configs\models\qqtang-rule1.onnx') -Force
@@ -712,19 +726,23 @@ Copy-Item -LiteralPath (Join-Path $workspace 'configs\models\README.md') -Destin
 New-Item -ItemType Directory -Force -Path (Join-Path $target 'runtime\onnxruntime\windows-amd64') | Out-Null
 Copy-Item -LiteralPath (Join-Path $workspace 'build-assets\onnxruntime\windows-amd64\onnxruntime.dll') -Destination (Join-Path $target 'runtime\onnxruntime\windows-amd64\onnxruntime.dll') -Force
 Copy-Item -LiteralPath (Join-Path $workspace 'build-assets\onnxruntime\windows-amd64\onnxruntime_providers_shared.dll') -Destination (Join-Path $target 'runtime\onnxruntime\windows-amd64\onnxruntime_providers_shared.dll') -Force
-foreach ($architecture in @('amd64', 'arm64')) {
-	$linuxRuntimeSource = Join-Path $workspace "build-assets\onnxruntime\linux-$architecture"
-	$linuxRuntimeDestination = Join-Path $target "runtime\onnxruntime\linux-$architecture"
-	New-Item -ItemType Directory -Force -Path $linuxRuntimeDestination | Out-Null
-	Copy-Item -LiteralPath (Join-Path $linuxRuntimeSource 'libonnxruntime.so.1.29.0') -Destination (Join-Path $linuxRuntimeDestination 'libonnxruntime.so.1.29.0') -Force
-	Copy-Item -LiteralPath (Join-Path $linuxRuntimeSource 'libonnxruntime_providers_shared.so') -Destination (Join-Path $linuxRuntimeDestination 'libonnxruntime_providers_shared.so') -Force
+if (-not $WindowsOnly) {
+	foreach ($architecture in @('amd64', 'arm64')) {
+		$linuxRuntimeSource = Join-Path $workspace "build-assets\onnxruntime\linux-$architecture"
+		$linuxRuntimeDestination = Join-Path $target "runtime\onnxruntime\linux-$architecture"
+		New-Item -ItemType Directory -Force -Path $linuxRuntimeDestination | Out-Null
+		Copy-Item -LiteralPath (Join-Path $linuxRuntimeSource 'libonnxruntime.so.1.29.0') -Destination (Join-Path $linuxRuntimeDestination 'libonnxruntime.so.1.29.0') -Force
+		Copy-Item -LiteralPath (Join-Path $linuxRuntimeSource 'libonnxruntime_providers_shared.so') -Destination (Join-Path $linuxRuntimeDestination 'libonnxruntime_providers_shared.so') -Force
+	}
 }
 Copy-Item -LiteralPath (Join-Path $workspace 'data\qqt_combine_recipes.json') -Destination (Join-Path $target 'data\qqt_combine_recipes.json') -Force
 Copy-Item -LiteralPath (Join-Path $workspace 'data\qqt_forge_rules.json') -Destination (Join-Path $target 'data\qqt_forge_rules.json') -Force
 Copy-Item -LiteralPath (Join-Path $workspace 'deploy\windows\README.txt') -Destination (Join-Path $target 'README.txt') -Force
 Copy-Item -LiteralPath (Join-Path $workspace 'deploy\windows\start-server-windows.cmd') -Destination (Join-Path $target 'start-server-windows.cmd') -Force
-Copy-Item -LiteralPath (Join-Path $workspace 'deploy\linux\start-server-linux-amd64.sh') -Destination (Join-Path $target 'start-server-linux-amd64.sh') -Force
-Copy-Item -LiteralPath (Join-Path $workspace 'deploy\linux\start-server-linux-arm64.sh') -Destination (Join-Path $target 'start-server-linux-arm64.sh') -Force
+if (-not $WindowsOnly) {
+	Copy-Item -LiteralPath (Join-Path $workspace 'deploy\linux\start-server-linux-amd64.sh') -Destination (Join-Path $target 'start-server-linux-amd64.sh') -Force
+	Copy-Item -LiteralPath (Join-Path $workspace 'deploy\linux\start-server-linux-arm64.sh') -Destination (Join-Path $target 'start-server-linux-arm64.sh') -Force
+}
 
 $manifestFiles = Get-ChildItem -LiteralPath $target -Recurse -File | Sort-Object FullName
 $targetPrefix = $target.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -756,6 +774,7 @@ $archivePath = Join-Path $releaseRoot ($packageName + '.zip')
 Get-ChildItem -LiteralPath $releaseRoot -File -Filter ($packageName + '*.zip') -ErrorAction SilentlyContinue |
     Remove-Item -Force
 Compress-Archive -LiteralPath $target -DestinationPath $archivePath -CompressionLevel Optimal -Force
+if ($WindowsOnly) { Write-Host 'Windows-only release: Linux servers, ONNX runtimes and start scripts were skipped.' }
 Write-Host "Release ready: $target"
 Write-Host "Files: $((Get-ChildItem -LiteralPath $target -Recurse -File).Count); bytes: $totalBytes"
 Write-Host "Archive: $archivePath"
