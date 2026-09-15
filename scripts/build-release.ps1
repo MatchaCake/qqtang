@@ -12,6 +12,13 @@ $baselineClient = [IO.Path]::GetFullPath((Join-Path $workspace 'client\original'
 if (-not (Test-Path -LiteralPath (Join-Path $baselineClient 'Client.exe') -PathType Leaf)) {
 	throw "Original client is missing. Read client\original\README.md and extract the supported client into $baselineClient"
 }
+# A previously patched client (imported with scripts\import-patched-client.ps1)
+# is a supported baseline: the static binary patchers detect already-applied
+# bytes, and Set-ReleaseIniExactValue keeps values already at their target.
+$baselineIsPatched = Test-Path -LiteralPath (Join-Path $baselineClient 'Client.tp-free.json') -PathType Leaf
+if ($baselineIsPatched) {
+	Write-Host 'Baseline client\original is a previously patched client; patches already in place are verified instead of re-applied.'
+}
 $releasePrefix = $releaseRoot.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
 if (-not $target.StartsWith($releasePrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Release target escapes the workspace release directory: $target"
@@ -67,8 +74,13 @@ function Set-ReleaseIniExactValue([string] $Path, [string] $Name, [string] $OldV
 	$text = [IO.File]::ReadAllText($Path, $encoding)
 	$pattern = '(?m)^(' + [Regex]::Escape($Name) + '=)' + [Regex]::Escape($OldValue) + '\r?$'
 	if (-not [Regex]::IsMatch($text, $pattern)) {
-		# The baseline must be the pristine supported client; report what the
-		# file actually contains so a wrong or already-patched extract is obvious.
+		# A baseline imported from a previously patched client already carries
+		# the target value; only that exact value is accepted as satisfied.
+		$patchedPattern = '(?m)^' + [Regex]::Escape($Name) + '=' + [Regex]::Escape($NewValue) + '\r?$'
+		if ([Regex]::IsMatch($text, $patchedPattern)) { return }
+		# Otherwise the baseline is neither the pristine supported client nor a
+		# patched one; report what the file actually contains so a wrong
+		# extract is obvious.
 		$keyPattern = '(?mi)^[ \t]*' + [Regex]::Escape($Name) + '[ \t]*=[^\r\n]*'
 		$actualLines = [Regex]::Matches($text, $keyPattern) | ForEach-Object { $_.Value.Trim() }
 		$detail = if ($actualLines) { 'actual: ' + ($actualLines -join '; ') } else { "no $Name line exists" }
